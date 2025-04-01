@@ -26,16 +26,7 @@ def get_version():
 # so that the package global names are available to the modules
 # when they are imported.
 
-from .corpus import FixedCorpusWeight, AnnotationCorpusWeight, \
-    NumMorphCorpusWeight, MorphLengthCorpusWeight, \
-    AlignedTokenCountCorpusWeight
-from .baseline import BaselineModel
-from .cmd import main, get_default_argparser, configure_logger, \
-    main_evaluation, get_evaluation_argparser
-from .exception import MorfessorException, ArgumentException
-from .io import MorfessorIO
 from .utils import _progress
-from .evaluation import MorfessorEvaluation, MorfessorEvaluationResult
 
-from .constructions.base import BaseConstructionMethods
+from morfessor.util.constructions.base import BaseConstructionMethods
 from .constructions.parallel import ParallelConstructionMethods

@@ -89,7 +89,7 @@ def _progress(iter_func):
             def __next__(self):
                 self.i += 1
                 if self.i % self.dotfreq == 0:
-                    sys.stderr.write('.')
+                    sys.stderr.write('..')
                     sys.stderr.flush()
                 try:
                     return next(self.it)
@@ -225,7 +225,7 @@ def _generator_progress(generator):
     def _progress_wrapper(generator):
         for (i, x) in enumerate(generator):
             if i % GENERATOR_DOT_FREQ == 0:
-                sys.stderr.write('.')
+                sys.stderr.write('..')
                 sys.stderr.flush()
             yield x
         sys.stderr.write('\n')

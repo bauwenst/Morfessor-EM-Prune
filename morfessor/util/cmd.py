@@ -10,12 +10,12 @@ import string
 
 from .data import freq_threshold, count_modifier, DataPoint, merge_counts, rand_split
 
-from . import get_version
-from . import utils
+from morfessor import get_version
+from morfessor.util import utils
 from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
-from .baseline import BaselineModel
-from .constructions.base import BaseConstructionMethods
+from morfessor.model.tokeniser import BaselineModel
+from morfessor.util.constructions.base import BaseConstructionMethods
 from .exception import ArgumentException
 from .io import MorfessorIO
 from .evaluation import MorfessorEvaluation, EvaluationConfig, \
@@ -804,7 +804,7 @@ def main(args):
                                                 clogprob=clogprob))
                 i += 1
                 if i % 10000 == 0:
-                    sys.stderr.write(".")
+                    sys.stderr.write("..")
             sys.stderr.write("\n")
         _logger.info("Done.")
 

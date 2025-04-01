@@ -7,29 +7,14 @@ import logging
 import math
 import numbers
 import random
-import sys
 
 from scipy.special import digamma
-# import math
-# def digamma(x):
-#   result = 0.0
-#   while x < 7:
-#     result -= 1 / x
-#     x += 1
-#   x -= 1.0 / 2.0
-#   xx = 1.0 / x
-#   xx2 = xx * xx
-#   xx4 = xx2 * xx2
-#   result += (math.log(x) + (1.0 / 24.0) * xx2 - (7.0 / 960.0) * xx4 +
-#              (31.0 / 8064.0) * xx4 * xx2 - (127.0 / 30720.0) * xx4 * xx4)
-#   return result
 
-from .cost import Cost, EmCost
-from .constructions.base import BaseConstructionMethods
-from .corpus import LexiconEncoding, CorpusEncoding, \
-    AnnotatedCorpusEncoding, FixedCorpusWeight
-from .utils import _progress, tail, logsumexp, categorical
-from .exception import MorfessorException, SegmentOnlyModelException
+from morfessor.util.cost import Cost, EmCost
+from morfessor.util.constructions.base import BaseConstructionMethods
+from morfessor.util.corpus import FixedCorpusWeight
+from morfessor.util.utils import _progress, tail, logsumexp, categorical
+from morfessor.util.exception import MorfessorException, SegmentOnlyModelException
 
 _logger = logging.getLogger(__name__)
 
