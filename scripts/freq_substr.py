@@ -2,7 +2,8 @@
 import collections
 import itertools
 import sys
-from morfessor.utils import SortedCounter
+
+from morfessor.util.utils import SortedCounter
 
 def substrs(seq, min_len=1, max_len=None, prefixes=None):
     prefix_len = min_len - 1

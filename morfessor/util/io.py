@@ -7,8 +7,8 @@ import logging
 import re
 import sys
 
-from morfessor import get_version
-from morfessor.util import utils
+from .. import get_version
+from . import utils
 
 try:
     # In Python2 import cPickle for better performance

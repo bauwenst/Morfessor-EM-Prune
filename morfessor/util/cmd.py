@@ -10,24 +10,16 @@ import string
 
 from .data import freq_threshold, count_modifier, DataPoint, merge_counts, rand_split
 
-from morfessor import get_version
-from morfessor.util import utils
+from .. import get_version
+from . import utils
 from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
 from morfessor.model.tokeniser import BaselineModel
-from morfessor.util.constructions.base import BaseConstructionMethods
+from .constructions.base import BaseConstructionMethods
 from .exception import ArgumentException
 from .io import MorfessorIO
 from .evaluation import MorfessorEvaluation, EvaluationConfig, \
     WilcoxonSignedRank, FORMAT_STRINGS
-
-PY3 = sys.version_info[0] == 3
-
-# _str is used to convert command line arguments to the right type (str for PY3, unicode for PY2
-if PY3:
-    _str = str
-else:
-    _str = lambda x: unicode(x, encoding=locale.getpreferredencoding())
 
 _logger = logging.getLogger(__name__)
 
@@ -154,17 +146,17 @@ Interactive use (read corpus from user):
             action='store_true',
             help="input file(s) for batch training are lists "
                  "(one compound per line, optionally count as a prefix)")
-    add_arg('--atom-separator', dest="separator", type=_str, default=None,
+    add_arg('--atom-separator', dest="separator", type=str, default=None,
             metavar='<regexp>',
             help="atom separator regexp (default %(default)s)")
-    add_arg('--compound-separator', dest="cseparator", type=_str, default=r'\s+',
+    add_arg('--compound-separator', dest="cseparator", type=str, default=r'\s+',
             metavar='<regexp>',
             help="compound separator regexp (default '%(default)s')")
-    add_arg('--analysis-separator', dest='analysisseparator', type=_str,
+    add_arg('--analysis-separator', dest='analysisseparator', type=str,
             default=',', metavar='<str>',
             help="separator for different analyses in an annotation file. Use"
                  "  NONE for only allowing one analysis per line")
-    add_arg('--output-format', dest='outputformat', type=_str,
+    add_arg('--output-format', dest='outputformat', type=str,
             default=r'{analysis}\n', metavar='<format>',
             help="format string for --output file (default: '%(default)s'). "
             "Valid keywords are: "
@@ -175,7 +167,7 @@ Interactive use (read corpus from user):
             "{clogprob} = log-probability of the compound. Valid escape "
             "sequences are '\\n' (newline) and '\\t' (tabular)")
     add_arg('--output-format-separator', dest='outputformatseparator',
-            type=_str, default=' ', metavar='<str>',
+            type=str, default=' ', metavar='<str>',
             help="construction separator for analysis in --output file "
             "(default: '%(default)s')")
     add_arg('--output-newlines', dest='outputnewlines', default=False,
@@ -198,7 +190,7 @@ Interactive use (read corpus from user):
             ("algorithm type (%(choices)s); "
              "repeat for sequential training with "
              "multiple algorithms (default 'recursive')"))
-    add_arg('-d', '--dampening', dest="dampening", type=_str, default='ones',
+    add_arg('-d', '--dampening', dest="dampening", type=str, default='ones',
             metavar='<type>', choices=['none', 'log', 'ones'],
             help="frequency dampening for training data ('none', 'log', or "
                  "'ones'; default '%(default)s')")
@@ -229,7 +221,7 @@ Interactive use (read corpus from user):
     add_arg('--max-epochs', dest='maxepochs', type=int, default=None,
             metavar='<int>',
             help='hard maximum of epochs in training')
-    add_arg('--nosplit-re', dest="nosplit", type=_str, default=None,
+    add_arg('--nosplit-re', dest="nosplit", type=str, default=None,
             metavar='<regexp>',
             help="if the expression matches the two surrounding characters, "
                  "do not allow splitting (default %(default)s)")
@@ -906,7 +898,7 @@ def get_evaluation_argparser():
             help='Use a compact table for a large number of comparisons')
 
     add_arg = parser.add_argument_group('file options').add_argument
-    add_arg('--construction-separator', dest="cseparator", type=_str,
+    add_arg('--construction-separator', dest="cseparator", type=str,
             default=' ', metavar='<regexp>',
             help="construction separator for test segmentation files"
                  " (default '%(default)s')")

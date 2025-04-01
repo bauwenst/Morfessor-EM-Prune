@@ -10,11 +10,11 @@ import random
 
 from scipy.special import digamma
 
-from morfessor.util.cost import Cost, EmCost
-from morfessor.util.constructions.base import BaseConstructionMethods
-from morfessor.util.corpus import FixedCorpusWeight
-from morfessor.util.utils import _progress, tail, logsumexp, categorical
-from morfessor.util.exception import MorfessorException, SegmentOnlyModelException
+from ..util.cost import Cost, EmCost
+from ..util.constructions.base import BaseConstructionMethods
+from ..util.corpus import FixedCorpusWeight
+from ..util.utils import _progress, tail, logsumexp, categorical
+from ..util.exception import MorfessorException, SegmentOnlyModelException
 
 _logger = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 import unittest
 
-from morfessor.constructions.parallel import ParallelConstructionMethods
+from morfessor.util.constructions.parallel import ParallelConstructionMethods
 
 
 class TestParallelConstruction(unittest.TestCase):
