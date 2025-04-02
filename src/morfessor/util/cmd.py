@@ -13,7 +13,7 @@ from .. import get_version
 from . import utils
 from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
-from src.morfessor.model.tokeniser import BaselineModel
+from ..model.tokeniser import BaselineModel
 from .constructions.base import BaseConstructionMethods
 from .exception import ArgumentException
 from .io import MorfessorIO

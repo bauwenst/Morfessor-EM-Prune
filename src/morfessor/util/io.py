@@ -6,6 +6,7 @@ import locale
 import logging
 import re
 import sys
+from typing import Iterator, Tuple
 
 from .. import get_version
 from . import utils
@@ -274,7 +275,7 @@ class MorfessorIO(object):
         except BaseException:
             pass
 
-        from src.morfessor import BaselineModel
+        from ..model.tokeniser import BaselineModel
         model = BaselineModel()
         model.load_segmentations(self.read_segmentation_file(file_name))
         _logger.info("%s was read as a segmentation" % file_name)
