@@ -21,7 +21,6 @@ maintainers = [
 ]
 description = "Morfessor EM+Prune"
 readme = "README.md"
-license = "BSD"
 keywords = ["NLP", "Morfessor", "tokenizers", "tokenization", "subwords", "segmentation", "natural language"]
 classifiers = [
     "Programming Language :: Python :: 3",
