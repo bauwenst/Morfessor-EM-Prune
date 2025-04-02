@@ -6,10 +6,10 @@ import sys
 
 import logging
 
-import morfessor
-from morfessor import BaselineModel
-from morfessor import ParallelConstructionMethods
-from morfessor.util.data import DataPoint
+from src import morfessor
+from src.morfessor import BaselineModel
+from src.morfessor import ParallelConstructionMethods
+from src.morfessor.util import DataPoint
 
 def main(argv):
     alpha = float(argv[0])

@@ -3,8 +3,7 @@
 from __future__ import unicode_literals
 
 import argparse
-import collections
-import morfessor
+from src import morfessor
 import sys
 import re
 import math
@@ -12,7 +11,7 @@ import math
 # Markers used for indicating intra-word boundaries
 RE_MARKERS = re.compile(r'[+@]')
 
-from morfessor import ArgumentException
+from src.morfessor import ArgumentException
 
 ALIGN_LOSSES = morfessor.AlignedTokenCountCorpusWeight.align_losses
 

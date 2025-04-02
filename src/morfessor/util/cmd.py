@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import locale
 import logging
 import math
 import random
@@ -14,7 +13,7 @@ from .. import get_version
 from . import utils
 from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
-from morfessor.model.tokeniser import BaselineModel
+from src.morfessor.model.tokeniser import BaselineModel
 from .constructions.base import BaseConstructionMethods
 from .exception import ArgumentException
 from .io import MorfessorIO

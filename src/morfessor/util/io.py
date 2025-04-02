@@ -274,7 +274,7 @@ class MorfessorIO(object):
         except BaseException:
             pass
 
-        from morfessor import BaselineModel
+        from src.morfessor import BaselineModel
         model = BaselineModel()
         model.load_segmentations(self.read_segmentation_file(file_name))
         _logger.info("%s was read as a segmentation" % file_name)

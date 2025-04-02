@@ -3,11 +3,10 @@
 from __future__ import unicode_literals
 
 import argparse
-import collections
-import morfessor
+from src import morfessor
 import sys
 
-from morfessor import ArgumentException
+from src.morfessor import ArgumentException
 
 ALIGN_LOSSES = morfessor.AlignedTokenCountCorpusWeight.align_losses
 

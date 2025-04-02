@@ -3,7 +3,8 @@
 import logging
 import sys
 
-import morfessor
+from src import morfessor
+
 
 def main(argv):
     parser = morfessor.get_evaluation_argparser()

@@ -1,7 +1,7 @@
 import unittest
 import itertools
 
-from morfessor.util.evaluation import WilcoxonSignedRank
+from src.morfessor.util import WilcoxonSignedRank
 
 class TestWilcoxon(unittest.TestCase):
     def setUp(self):

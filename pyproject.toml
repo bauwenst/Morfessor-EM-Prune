@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "morfessor"
+version = "2.0.7"
+requires-python = ">= 3.9"
+authors = [
+    {name = "Sami Virpioja"},
+    {name = "Peter Smit"},
+    {name = "Stig-Arne Grönroos", email = "morpho@aalto.fi"},
+
+    {name = "Thomas Bauwens", email = "thomas.bauwens@kuleuven.be"},
+    {name = "Simon Devauchelle"},
+    {name = "Matthias Orlikowski"},
+    {name = "Lukas Mielczarek"}
+]
+maintainers = [
+    {name = "Thomas Bauwens", email = "thomas.bauwens@kuleuven.be"}
+]
+description = "Morfessor EM+Prune"
+readme = "README.md"
+license = "BSD"
+keywords = ["NLP", "Morfessor", "tokenizers", "tokenization", "subwords", "segmentation", "natural language"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Topic :: Scientific/Engineering"
+]
+dependencies = [
+    "numpy",
+    "scipy"
+]
+
+[project.optional-dependencies]
+docs = [
+    "sphinx",
+    "sphinxcontrib-napoleon"
+]
+
+[project.urls]
+Homepage = "http://morpho.aalto.fi"

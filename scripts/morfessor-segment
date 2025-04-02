@@ -4,7 +4,8 @@ import argparse
 import logging
 import sys
 
-import morfessor
+from src import morfessor
+
 
 def main(argv):
     parser = morfessor.get_default_argparser()
