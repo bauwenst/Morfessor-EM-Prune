@@ -1,8 +1,14 @@
+from typing import Tuple
 from collections import Counter, namedtuple
+from dataclasses import dataclass
 from random import random
 
 
-DataPoint = namedtuple('DataPoint', ['count', 'compound', 'splitlocs'])
+@dataclass
+class DataPoint:
+    count: int
+    compound: str
+    splitlocs: Tuple[int,...]
 
 
 def merge_counts(data):
@@ -16,7 +22,7 @@ def merge_counts(data):
     for v in sorted(store.values()):
         yield v
 
-def freq_threshold(data, threshold, online=False):
+def freq_threshold(data, threshold: float, online=False):
     if online:
         counts = Counter()
         for dp in data:

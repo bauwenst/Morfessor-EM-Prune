@@ -467,14 +467,15 @@ def main(args):
     else:
         modelclass = BaselineModel if args.restannofile is None \
             else RestrictedBaseline
-        model = modelclass(corpusweight=args.corpusweight,
-                           use_skips=args.skips,
-                           constr_class=constr_class,
-                           use_em=args.em_prune is not None,
-                           em_substr=em_substr,
-                           nolexcost=args.nolexcost,
-                           freq_distr=args.freq_distr,
-                           )
+        model = modelclass(
+            corpusweight=args.corpusweight,
+            use_skips=args.skips,
+            constr_class=constr_class,
+            use_em=args.em_prune is not None,
+            em_substr=em_substr,
+            nolexcost=args.nolexcost,
+            freq_distr=args.freq_distr,
+        )
 
     if args.loadsegfile is not None:
         model.load_segmentations(io.read_segmentation_file(args.loadsegfile))
@@ -622,6 +623,9 @@ def main(args):
                     proportion=prune_proportion,
                     goal_lexicon=args.morphtypes)
                 model.em_autotune_alpha = True
+            else:
+                raise RuntimeError
+
             e, c = model.train_em_prune(
                 prune_criterion,
                 max_epochs=args.maxepochs,

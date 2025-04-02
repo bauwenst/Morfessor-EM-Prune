@@ -1,4 +1,7 @@
 from __future__ import unicode_literals
+from typing import Iterable, List, Dict, Union, Tuple
+from enum import Enum
+from dataclasses import dataclass
 import collections
 import copy
 import heapq
@@ -15,36 +18,52 @@ from ..util.constructions.base import BaseConstructionMethods
 from ..util.corpus import FixedCorpusWeight
 from ..util.utils import _progress, tail, logsumexp, categorical
 from ..util.exception import MorfessorException, SegmentOnlyModelException
+from ..util.data import DataPoint
 
 _logger = logging.getLogger(__name__)
-
-
-# rcount = root count (from corpus)
-# count = total count of the node
-# splitloc = integer or tuple. Location(s) of the possible splits for virtual
-#            constructions; empty tuple or 0 if real construction
-ConstrNode = collections.namedtuple('ConstrNode',
-                                    ['rcount', 'count', 'splitloc'])
-
-MODE_NORMAL = 'normal'
-MODE_EM = 'em'
-MODE_SEGMENT_ONLY = 'segment_only'
-
 EPS = 1e-8
 
-PRUNE_ALWAYS = 0
-PRUNE_GAIN = 1
-PRUNE_LOSS = 2
-PRUNE_NEVER_DBL = 3
-PRUNE_NEVER_NO_ALT = 4
-PRUNE_NEVER_SUPERVISED = 5
-PRUNE_NEVER_CHAR = 6
 
-PruneStats = collections.namedtuple('PruneStats',
-    ['construction', 'threshold_alpha', 'delta_lc', 'delta_cc', 'delta_cost', 'decision'])
+@dataclass
+class ConstructionNode:
+    rcount: int  # root count (from corpus)
+    count: int  # total count of the node
+    splitloc: Union[int, Tuple[int,...]]  # Location(s) of the possible splits for virtual constructions; empty tuple or 0 if real construction
 
 
-class BaselineModel(object):
+# count = count of the node
+# splitloc = integer or tuple. Location(s) of the possible splits for virtual
+#            constructions; empty tuple or 0 if real construction
+SimpleConstrNode = collections.namedtuple('ConstrNode', ['count', 'splitloc'])
+
+
+class Mode(Enum):
+    NORMAL       = 1  # old Baseline
+    EM           = 2  # EM+Prune
+    SEGMENT_ONLY = 3  # reduced (TODO: what is this?)
+
+
+class PruneDecision(Enum):
+    ALWAYS = 0
+    GAIN   = 1
+    LOSS   = 2
+    NEVER_DBL = 3
+    NEVER_NO_ALT = 4
+    NEVER_SUPERVISED = 5
+    NEVER_CHAR = 6
+
+
+@dataclass
+class PruneStats:
+    construction: str
+    threshold_alpha: float
+    delta_lc: float
+    delta_cc: float
+    delta_cost: float
+    decision: PruneDecision
+
+
+class BaselineModel:
     """Morfessor Baseline model class.
 
     Implements training of and segmenting with a Morfessor model. The model
@@ -75,14 +94,14 @@ class BaselineModel(object):
 
         self.cc = constr_class if constr_class is not None else BaseConstructionMethods()
 
-        # In analyses for each construction a ConstrNode is stored. All
-        # training data has a rcount (real count) > 0. All real morphemes
-        # have no split locations.
-        self._analyses = {}
+        # For each construction a ConstrNode is stored.
+        #  - All training data has a rcount (real count) > 0.
+        #  - All real morphemes have no split locations.
+        self._tree: Dict[str,ConstructionNode] = {}
 
         # Flag to indicate the mode in which the model is operating
         # NORMAL: old Baseline, EM: EM+Prune, SEGMENT_ONLY: reduced
-        self._mode = MODE_EM if use_em else MODE_NORMAL
+        self._mode = Mode.EM if use_em else Mode.NORMAL
 
         # Flag to indicate whether semi-supervised training is used
         self._supervised = False
@@ -100,7 +119,8 @@ class BaselineModel(object):
         else:
             self.cost = Cost(self.cc, corpusweight)
 
-        #Set corpus weight updater
+        # Set corpus weight updater
+        self._corpus_weight_updater = None
         self.set_corpus_weight_updater(corpusweight)
 
     def set_corpus_weight_updater(self, corpus_weight):
@@ -113,7 +133,7 @@ class BaselineModel(object):
 
     @property
     def _segment_only(self):
-        return self._mode == MODE_SEGMENT_ONLY
+        return self._mode == Mode.SEGMENT_ONLY
 
     @property
     def tokens(self):
@@ -130,7 +150,7 @@ class BaselineModel(object):
             raise SegmentOnlyModelException()
 
     def _check_normal_mode(self):
-        if not self._mode == MODE_NORMAL:
+        if not self._mode == Mode.NORMAL:
             raise Exception('Model must be in normal mode')
 
     def _epoch_checks(self):
@@ -181,12 +201,12 @@ class BaselineModel(object):
         # and add missing compounds also to the unannotated data
         constructions = collections.Counter()
         for compound, alternatives in self.annotations.items():
-            if not compound in self._analyses:
+            if not compound in self._tree:
                 self._add_compound(compound, 1)
 
             analysis, cost = self._best_analysis(alternatives)
             for m in analysis:
-                constructions[m] += self._analyses[compound].rcount
+                constructions[m] += self._tree[compound].rcount
 
         # Apply the selected constructions in annotated corpus coding
         self.cost.set_annot_constructions(constructions)
@@ -203,8 +223,7 @@ class BaselineModel(object):
             for constr in analysis:
                 count = self.get_construction_count(constr)
                 if count > 0:
-                    cost += (math.log(self.cost.tokens()) -
-                             math.log(count))
+                    cost += math.log(self.cost.tokens()) - math.log(count)
                 else:
                     cost -= self.penalty  # penalty is negative
             if bestcost is None or cost < bestcost:
@@ -212,21 +231,19 @@ class BaselineModel(object):
                 bestanalysis = analysis
         return bestanalysis, bestcost
 
-    def _add_compound(self, compound, c):
+    def _add_compound(self, compound: str, c: int):
         """Add compound with count c to data."""
         self.cost.update_boundaries(compound, c)
-        if self._mode == MODE_NORMAL:
+        if self._mode == Mode.NORMAL:
             self._modify_construction_count(compound, c)
-            oldrc = self._analyses[compound].rcount
-            self._analyses[compound] = \
-                self._analyses[compound]._replace(rcount=oldrc + c)
+            self._tree[compound].rcount += c
         else:
-            self._analyses[compound] = ConstrNode(c, c, [])
+            self._tree[compound] = ConstructionNode(c, c, [])
 
-    def _remove(self, construction):
+    def _remove(self, construction: str):
         """Remove construction from model."""
         self._check_normal_mode()
-        rcount, count, splitloc = self._analyses[construction]
+        rcount, count, splitloc = self._tree[construction]
         self._modify_construction_count(construction, -count)
         return rcount, count
 
@@ -246,13 +263,13 @@ class BaselineModel(object):
         parts = list(parts)
         if len(parts) == 1:
             rcount, count = self._remove(compound)
-            self._analyses[compound] = ConstrNode(rcount, 0, tuple())
+            self._tree[compound] = ConstructionNode(rcount, 0, tuple())
             self._modify_construction_count(compound, count)
         else:
             rcount, count = self._remove(compound)
 
             splitloc = tuple(self.cc.parts_to_splitlocs(parts))
-            self._analyses[compound] = ConstrNode(rcount, count, splitloc)
+            self._tree[compound] = ConstructionNode(rcount, count, splitloc)
             for constr in parts:
                 self._modify_construction_count(constr, count)
 
@@ -344,7 +361,7 @@ class BaselineModel(object):
 
         if best_splitloc:
             # Virtual construction
-            self._analyses[construction] = ConstrNode(rcount, count, best_splitloc)
+            self._tree[construction] = ConstructionNode(rcount, count, best_splitloc)
             prefix, suffix = self.cc.split(construction, best_splitloc)
             self._modify_construction_count(prefix, count)
             self._modify_construction_count(suffix, count)
@@ -355,7 +372,7 @@ class BaselineModel(object):
                 return lp + lp
         else:
             # Real construction
-            self._analyses[construction] = ConstrNode(rcount, 0, None)
+            self._tree[construction] = ConstructionNode(rcount, 0, None)
             self._modify_construction_count(construction, count)
             return [construction]
 
@@ -369,19 +386,19 @@ class BaselineModel(object):
         """
         if dcount == 0 or construction is None:
             return
-        if construction in self._analyses:
-            rcount, count, splitloc = self._analyses[construction]
+        if construction in self._tree:
+            rcount, count, splitloc = self._tree[construction]
         else:
             rcount, count, splitloc = 0, 0, None
         newcount = count + dcount
         # observe that this comparison will not work correctly if counts
         # are floats rather than ints
         if newcount == 0:
-            if construction in self._analyses:
-                del self._analyses[construction]
+            if construction in self._tree:
+                del self._tree[construction]
         else:
-            self._analyses[construction] = ConstrNode(rcount, newcount,
-                                                      splitloc)
+            self._tree[construction] = ConstructionNode(rcount, newcount,
+                                                        splitloc)
         if splitloc:
             # Virtual construction
             for child in self.cc.splitn(construction, splitloc):
@@ -393,18 +410,18 @@ class BaselineModel(object):
     def get_compounds(self):
         """Return the compound types stored by the model."""
         self._check_segment_only()
-        return [w for w, node in self._analyses.items()
+        return [w for w, node in self._tree.items()
                 if node.rcount > 0]
 
     def get_compound_counts(self):
         """Return the compound types stored by the model."""
         self._check_segment_only()
-        return [(w, node.rcount) for (w, node) in self._analyses.items()
+        return [(w, node.rcount) for (w, node) in self._tree.items()
                 if node.rcount > 0]
 
     def get_constructions(self):
         """Return a list of the present constructions and their counts."""
-        return sorted((c, node.count) for c, node in self._analyses.items()
+        return sorted((c, node.count) for c, node in self._tree.items()
                       if not node.splitloc)
 
     def get_cost(self):
@@ -414,22 +431,22 @@ class BaselineModel(object):
     def get_segmentations(self):
         """Retrieve segmentations for all compounds encoded by the model."""
         self._check_normal_mode()
-        for w in sorted(self._analyses.keys()):
-            c = self._analyses[w].rcount
+        for w in sorted(self._tree.keys()):
+            c = self._tree[w].rcount
             if c > 0:
                 yield c, w, self.segment(w)
 
     def get_pseudomodel(self, viterbismooth, viterbimaxlen):
         self._check_segment_only()
-        for w in sorted(self._analyses.keys()):
-            node = self._analyses[w]
+        for w in sorted(self._tree.keys()):
+            node = self._tree[w]
             if node.rcount == 0:
                 continue
             constructions, _ = self.viterbi_segment(
                 w, viterbismooth, viterbimaxlen)
             yield (node.rcount, w, constructions)
 
-    def load_data(self, data):
+    def load_data(self, data: Iterable[DataPoint]):
         """Load data to initialize the model for batch training.
 
         Arguments:
@@ -442,7 +459,7 @@ class BaselineModel(object):
         self._check_segment_only()
         for dp in data:
             self._add_compound(dp.compound, dp.count)
-            if self._mode == MODE_NORMAL:
+            if self._mode == Mode.NORMAL:
                 self._clear_compound_analysis(dp.compound)
                 self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
         return self.get_cost()
@@ -464,7 +481,7 @@ class BaselineModel(object):
         self._update_annotation_choices()
         self.cost._annot_coding.update_weight()
 
-    def segment(self, compound):
+    def segment(self, compound: str) -> List[str]:
         """Segment the compound by looking it up in the model analyses.
 
         Raises KeyError if compound is not present in the training
@@ -472,7 +489,7 @@ class BaselineModel(object):
 
         """
         self._check_normal_mode()
-        _, _, splitloc = self._analyses[compound]
+        _, _, splitloc = self._tree[compound]
         constructions = []
         if splitloc:
             for part in self.cc.splitn(compound, splitloc):
@@ -482,17 +499,17 @@ class BaselineModel(object):
 
         return constructions
 
-    def e_step(self, maxlen):
+    def e_step(self, maxlen: int):
         expected = collections.Counter()
         compounds = list(self.get_compound_counts())
         tot_cost = 0
         for compound, freq in compounds:
-            w_expected, cost = self.forward_backward(compound, freq, maxlen)
+            w_expected, cost = self._forward_backward(compound, freq, maxlen)
             expected.update(w_expected)
             tot_cost += cost
         return expected, tot_cost
 
-    def e_step_hard(self, maxlen):
+    def e_step_hard(self, maxlen: int):
         expected = collections.Counter()
         compounds = list(self.get_compound_counts())
         tot_cost = 0
@@ -504,7 +521,7 @@ class BaselineModel(object):
             tot_cost += cost
         return expected, tot_cost
 
-    def m_step(self, expected, expected_freq_threshold, noexpdigamma=False):
+    def m_step(self, expected: Dict[str,int], expected_freq_threshold: int, noexpdigamma: bool=False):
         # prune out infrequent
         # FIXME: is protecting length 1 useful? max(c, 1e-6))?
         expected = collections.Counter(
@@ -523,7 +540,7 @@ class BaselineModel(object):
         # set model parameters
         self.cost.counts = expected
 
-    def prune_lexicon(self, prune_criterion, lateen, maxlen, expected_freq_threshold):
+    def prune_lexicon(self, prune_criterion, lateen: str, maxlen: int, expected_freq_threshold: int):
         self.cost.reset()
         if lateen == 'prune':
             em_params = copy.deepcopy(self.cost)
@@ -553,13 +570,13 @@ class BaselineModel(object):
         current_alpha = self.get_corpus_coding_weight()
         for construction in constructions:
             if len(construction) == 1:
-                yield PruneStats(construction, -math.inf, 0, 0, 0, PRUNE_NEVER_CHAR)
+                yield PruneStats(construction, -math.inf, 0, 0, 0, PruneDecision.NEVER_CHAR)
                 continue
             # assume all probability mass goes to viterbi segmentation
             replacement, _ = self.viterbi_segment(
                 construction, taboo=[construction], addcount=0)
             if replacement == construction:
-                yield PruneStats(construction, -math.inf, 0, 0, 0, PRUNE_NEVER_NO_ALT)
+                yield PruneStats(construction, -math.inf, 0, 0, 0, PruneDecision.NEVER_NO_ALT)
                 continue
             count = self.cost.counts[construction]
 
@@ -580,7 +597,7 @@ class BaselineModel(object):
             if self._supervised:
                 # this only protects currently active annotations
                 if self.cost._annot_coding.constructions.get(construction, 0) > 0:
-                    decision = PRUNE_NEVER_SUPERVISED
+                    decision = PruneDecision.NEVER_SUPERVISED
             yield PruneStats(construction,
                              threshold_alpha,
                              delta_lc, delta_cc,
@@ -590,27 +607,29 @@ class BaselineModel(object):
         delta_cost = delta_lc + (alpha * delta_cc)
         # tuning can't affect if both deltas have the same sign
         if delta_lc < 0 and delta_cc < 0:
-            decision = PRUNE_ALWAYS
+            decision = PruneDecision.ALWAYS
             threshold_alpha = math.inf
         elif delta_lc > 0 and delta_cc > 0:
-            decision = PRUNE_NEVER_DBL
+            decision = PruneDecision.NEVER_DBL
             threshold_alpha = -math.inf
         else:
             # if deltas have opposite sign,
             # compute the threshold alpha for which they cancel out
             threshold_alpha = abs(delta_lc / (delta_cc + EPS))
             # decicion based on current alpha
-            decision = PRUNE_GAIN if delta_cost < 0 else PRUNE_LOSS
+            decision = PruneDecision.GAIN if delta_cost < 0 else PruneDecision.LOSS
         return threshold_alpha, delta_cost, decision
 
-    def reweight_prune_stats(self, prune_stats, optimal_alpha):
+    def reweight_prune_stats(self, prune_stats, optimal_alpha: float):
         for stat in prune_stats:
-            threshold_alpha, delta_cost, decision = self.prune_cost_at_alpha(
-                optimal_alpha, stat.delta_lc, stat.delta_cc)
-            yield PruneStats(stat.construction,
-                             stat.threshold_alpha,
-                             stat.delta_lc, stat.delta_cc,
-                             delta_cost, decision)
+            threshold_alpha, delta_cost, decision = self.prune_cost_at_alpha(optimal_alpha, stat.delta_lc, stat.delta_cc)
+            yield PruneStats(
+                stat.construction,
+                stat.threshold_alpha,
+                stat.delta_lc, stat.delta_cc,
+                delta_cost,
+                decision
+            )
 
     def prune_criterion_lexicon_size(self, proportion, goal_lexicon):
         # prune at most proportion. prune until goal_lexicon is reached
@@ -621,7 +640,7 @@ class BaselineModel(object):
             max_prune = min(max_prune_prop, max_prune_goal)
             # done unless epoch quota was the stopping reason
             done = max_prune_goal <= max_prune_prop
-            prune_stats.sort(key=lambda x: (x.decision, x.delta_cost))
+            prune_stats.sort(key=lambda x: (x.decision.value, x.delta_cost))
             pruned = [x.construction for x in prune_stats[:max_prune]]
             return pruned, done
         return prune_criterion
@@ -631,12 +650,12 @@ class BaselineModel(object):
         def prune_criterion(prune_stats):
             n_tot = len(prune_stats)
             max_prune_prop = int(math.ceil(n_tot * proportion))
-            prune_stats.sort(key=lambda x: (x.decision, x.delta_cost))
+            prune_stats.sort(key=lambda x: (x.decision.value, x.delta_cost))
             pruned = []
             for (i, stat) in enumerate(prune_stats):
                 if i >= max_prune_prop:
                     return pruned, False
-                if stat.decision >= PRUNE_LOSS:
+                if stat.decision not in {PruneDecision.ALWAYS, PruneDecision.GAIN}:
                     return pruned, True
                 pruned.append(stat.construction)
             # pruned everything
@@ -648,21 +667,21 @@ class BaselineModel(object):
         # determine optimal alpha. prune at most proportion. prune based on decision
         if first_prune_proportion is None:
             first_prune_proportion = proportion
-        def prune_criterion(prune_stats):
+        def prune_criterion(prune_stats: List[PruneStats]):
             # determine optimal alpha
             if len(prune_stats) < goal_lexicon:
                 _logger.info('already below goal')
                 return [], True
-            prune_stats.sort(key=lambda x: (x.decision, -x.threshold_alpha))
+            prune_stats.sort(key=lambda x: (x.decision.value, -x.threshold_alpha))
             optimal_alpha = prune_stats[-int(goal_lexicon)].threshold_alpha
             if optimal_alpha == -math.inf:
                 _logger.info('cannot reach goal lexicon by tuning: too many always keep')
                 optimal_alpha = min(x.threshold_alpha for x in prune_stats
-                                    if x.decision in (PRUNE_GAIN, PRUNE_LOSS))
+                                    if x.decision.value in (PruneDecision.GAIN, PruneDecision.LOSS))
             if optimal_alpha == math.inf:
                 _logger.info('cannot reach goal lexicon by tuning: infinite alpha')
                 optimal_alpha = max(x.threshold_alpha for x in prune_stats
-                                    if x.decision in (PRUNE_GAIN, PRUNE_LOSS))
+                                    if x.decision.value in (PruneDecision.GAIN, PruneDecision.LOSS))
             _logger.info("Corpus weight set to {}".format(optimal_alpha))
             self.set_corpus_coding_weight(optimal_alpha)
             prune_stats = list(self.reweight_prune_stats(prune_stats, optimal_alpha))
@@ -675,12 +694,12 @@ class BaselineModel(object):
             max_prune = min(max_prune_prop, max_prune_goal)
             # done unless epoch quota was the stopping reason
             done = max_prune_goal <= max_prune_prop
-            prune_stats.sort(key=lambda x: (x.decision, x.delta_cost))
+            prune_stats.sort(key=lambda x: (x.decision.value, x.delta_cost))
             pruned = []
             for (i, stat) in enumerate(prune_stats):
                 if i >= max_prune:
                     return pruned, done
-                if stat.decision >= PRUNE_LOSS:
+                if stat.decision not in {PruneDecision.ALWAYS, PruneDecision.GAIN}:
                     return pruned, done
                 pruned.append(stat.construction)
             # pruned everything
@@ -963,13 +982,13 @@ class BaselineModel(object):
         constructions = list(self.cc.splitn(compound, list(reversed(splitlocs))))
 
         # Add boundary cost
-        if self._mode == MODE_NORMAL:
+        if self._mode == Mode.NORMAL:
             cost += (math.log(self.cost.tokens() +
                             self.cost.compound_tokens()) -
                     math.log(self.cost.compound_tokens()))
         return constructions, cost
 
-    def sample_segment(self, compound, theta=0.5, maxlen=30, taboo=None):
+    def sample_segment(self, compound: str, theta: float=0.5, maxlen: int=30, taboo: Iterable[str]=None):
         """Sample a segmentation using the
         Forward-filter Backward-sample algorithm.
 
@@ -1079,7 +1098,7 @@ class BaselineModel(object):
 
         return constructions, path_cost
 
-    def forward_backward(self, compound, freq, maxlen=30):
+    def _forward_backward(self, compound: str, freq: int, maxlen: int=30):
         grid_alpha = {'start': (0.0, None)}
         grid_beta = {'stop': (0.0, None)}
         tokens = self.cost.all_tokens()
@@ -1287,7 +1306,7 @@ class BaselineModel(object):
                         break
             constructions.reverse()
             # Add boundary cost
-            if self._mode == MODE_NORMAL:
+            if self._mode == Mode.NORMAL:
                 cost += (math.log(self.cost.tokens() +
                                 self.cost.compound_tokens()) -
                         math.log(self.cost.compound_tokens()))
@@ -1299,7 +1318,7 @@ class BaselineModel(object):
     def get_corpus_coding_weight(self):
         return self.cost._corpus_coding.weight
 
-    def set_corpus_coding_weight(self, weight):
+    def set_corpus_coding_weight(self, weight: float):
         self._check_segment_only()
         self.cost.set_corpus_coding_weight(weight)
 
@@ -1314,8 +1333,8 @@ class BaselineModel(object):
         self._num_compounds = len(self.get_compounds())
         self._segment_only = True
 
-        self._analyses = {k: v for (k, v) in self._analyses.items()
-                          if not v.splitloc}
+        self._tree = {k: v for (k, v) in self._tree.items()
+                      if not v.splitloc}
 
     def clear_segmentation(self):
         self._check_normal_mode()
@@ -1332,8 +1351,3 @@ class BaselineModel(object):
         if self.cc._nosplit:
             params['nosplit'] = self.cc._nosplit.pattern
         return params
-
-# count = count of the node
-# splitloc = integer or tuple. Location(s) of the possible splits for virtual
-#            constructions; empty tuple or 0 if real construction
-SimpleConstrNode = collections.namedtuple('ConstrNode', ['count', 'splitloc'])

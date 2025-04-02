@@ -75,7 +75,7 @@ class MorfessorIO(object):
                 file_obj.write("%f %s\n" % (count, constr))
         _logger.info("Done.")
 
-    def read_segmentation_file(self, file_name, has_counts=True, **kwargs):
+    def read_segmentation_file(self, file_name, has_counts=True, **kwargs) -> Iterator[Tuple[int, str, ]]:
         """Read segmentation file.
 
         File format:

@@ -5,7 +5,6 @@ Morfessor 2.0 - Python implementation of the Morfessor method
 """
 import logging
 
-
 __all__ = ['MorfessorException', 'ArgumentException', 'MorfessorIO',
            'BaselineModel', 'main', 'get_default_argparser', 'main_evaluation',
            'get_evaluation_argparser']
@@ -30,3 +29,6 @@ from .util.utils import _progress
 
 from .util.constructions.base import BaseConstructionMethods
 from .util.constructions.parallel import ParallelConstructionMethods
+from .util.exception import MorfessorException
+
+from .util.cmd import *
