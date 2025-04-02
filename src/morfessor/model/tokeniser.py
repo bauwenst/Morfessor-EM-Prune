@@ -74,7 +74,8 @@ class BaselineModel:
 
     penalty = -9999.9
 
-    def __init__(self, corpusweight=None, use_skips=False, constr_class=None,
+    def __init__(self, corpusweight=None, use_skips=False, force_splits=None,
+                 nosplit_re=None,
                  use_em=False, em_substr=None, nolexcost=False, freq_distr='baseline'):
         """Initialize a new model instance.
 
@@ -92,7 +93,7 @@ class BaselineModel:
 
         """
 
-        self.cc = constr_class if constr_class is not None else BaseConstructionMethods()
+        self.cc = BaseConstructionMethods(force_splits=force_splits, nosplit_re=nosplit_re)
 
         # For each construction a ConstrNode is stored.
         #  - All training data has a rcount (real count) > 0.
