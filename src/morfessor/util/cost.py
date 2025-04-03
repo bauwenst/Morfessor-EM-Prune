@@ -3,6 +3,7 @@ import logging
 import numbers
 from collections import Counter
 
+from enum import Enum
 import math
 
 from .corpus import CorpusEncoding, LexiconEncoding, AnnotatedCorpusEncoding, FixedCorpusWeight
@@ -12,8 +13,8 @@ _logger = logging.getLogger(__name__)
 
 
 class Cost(object):
-    """Class for calculating the entropy (encoding length) of a corpus and lexicon.
-
+    """
+    Class for calculating the entropy (encoding length) of a corpus and lexicon.
     """
     def __init__(self, contr_class, corpusweight=1.0):
         self.cc = contr_class
@@ -138,17 +139,21 @@ class EmLexiconEncoding(LexiconEncoding):
             self.add(construction)
 
 
+class FrequencyDistributionMode(Enum):
+    BASELINE = 1
+    OMIT     = 2
+
+
 class EmCorpusEncoding(CorpusEncoding):
-    def __init__(self, *args, freq_distr='baseline', **kwargs):
+    def __init__(self, *args, distribution_mode: FrequencyDistributionMode=FrequencyDistributionMode.BASELINE, **kwargs):
         super().__init__(*args, **kwargs)
-        try:
-            freq_dist_funcs = {
-                'omit': self.frequency_distribution_cost_zero,
-                'baseline': self.frequency_distribution_cost_bl,
-            }
-            self.frequency_distribution_cost = freq_dist_funcs[freq_distr]
-        except KeyError:
-            raise Exception('Unrecognized freq_distr {}'.format(freq_distr))
+
+        if distribution_mode == FrequencyDistributionMode.BASELINE:
+            self.frequency_distribution_cost = self.frequency_distribution_cost_bl
+        elif distribution_mode == FrequencyDistributionMode.OMIT:
+            self.frequency_distribution_cost = self.frequency_distribution_cost_zero
+        else:
+            raise RuntimeError(distribution_mode)
 
     def reset(self, counts):
         self.tokens = sum(counts.values())

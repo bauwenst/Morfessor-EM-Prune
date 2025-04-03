@@ -597,8 +597,7 @@ def main(args):
                 raise Exception('--em-prune does not support --nosplit-re')
             if args.nolexcost and args.prune_criterion != 'lexicon':
                 raise Exception('--no-lexicon-cost requires --prune-criterion lexicon')
-            _logger.info("Batch training with em+prune algorithm, criterion: %s",
-                args.prune_criterion)
+            _logger.info("Batch training with em+prune algorithm, criterion: %s", args.prune_criterion)
             c = model.load_data(data)
             if args.maxepochs is None:
                 # em-prune needs maxepochs to be set
@@ -621,7 +620,6 @@ def main(args):
                 prune_criterion = model.prune_criterion_autotune(
                     proportion=prune_proportion,
                     goal_lexicon=args.morphtypes)
-                model.em_autotune_alpha = True
             else:
                 raise RuntimeError
 

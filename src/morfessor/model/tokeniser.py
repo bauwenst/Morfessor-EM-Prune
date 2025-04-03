@@ -1,8 +1,9 @@
 from __future__ import unicode_literals
 from typing import Iterable, List, Dict, Union, Tuple
+from collections import Counter
 from enum import Enum
 from dataclasses import dataclass
-import collections
+
 import copy
 import heapq
 import itertools
@@ -13,12 +14,13 @@ import random
 
 from scipy.special import digamma
 
-from ..util.cost import Cost, EmCost
+from ..util.cost import Cost, EmCost, FrequencyDistributionMode
 from ..util.constructions.base import BaseConstructionMethods
 from ..util.corpus import FixedCorpusWeight
 from ..util.utils import _progress, tail, logsumexp, categorical
 from ..util.exception import MorfessorException, SegmentOnlyModelException
 from ..util.data import DataPoint
+from ..util.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha
 
 _logger = logging.getLogger(__name__)
 EPS = 1e-8
@@ -31,10 +33,10 @@ class ConstructionNode:
     splitloc: Union[int, Tuple[int,...]]  # Location(s) of the possible splits for virtual constructions; empty tuple or 0 if real construction
 
 
-# count = count of the node
-# splitloc = integer or tuple. Location(s) of the possible splits for virtual
-#            constructions; empty tuple or 0 if real construction
-SimpleConstrNode = collections.namedtuple('ConstrNode', ['count', 'splitloc'])
+@dataclass
+class SimpleConstrNode:
+    count: int
+    splitloc: Union[int, Tuple[int,...]]
 
 
 class Mode(Enum):
@@ -43,40 +45,22 @@ class Mode(Enum):
     SEGMENT_ONLY = 3  # reduced (TODO: what is this?)
 
 
-class PruneDecision(Enum):
-    ALWAYS = 0
-    GAIN   = 1
-    LOSS   = 2
-    NEVER_DBL = 3
-    NEVER_NO_ALT = 4
-    NEVER_SUPERVISED = 5
-    NEVER_CHAR = 6
-
-
-@dataclass
-class PruneStats:
-    construction: str
-    threshold_alpha: float
-    delta_lc: float
-    delta_cc: float
-    delta_cost: float
-    decision: PruneDecision
-
-
 class BaselineModel:
-    """Morfessor Baseline model class.
+    """
+    Morfessor Baseline model class.
 
     Implements training of and segmenting with a Morfessor model. The model
     is complete agnostic to whether it is used with lists of strings (finding
     phrases in sentences) or strings of characters (finding morphs in words).
-
     """
 
     penalty = -9999.9
 
-    def __init__(self, corpusweight=None, use_skips=False, force_splits=None,
-                 nosplit_re=None,
-                 use_em=False, em_substr=None, nolexcost=False, freq_distr='baseline'):
+    def __init__(self,
+                 corpusweight=None,
+                 use_skips: bool=False,
+                 force_splits=None,
+                 nosplit_re=None):
         """Initialize a new model instance.
 
         Arguments:
@@ -87,10 +71,6 @@ class BaselineModel:
                          to speed up training
             nosplit_re: regular expression string for preventing splitting
                           in certain contexts
-            use_em: use em+prune training
-            em_substr: substring lexicon
-            nolexcost: ignore lexicon cost with EM+prune
-
         """
 
         self.cc = BaseConstructionMethods(force_splits=force_splits, nosplit_re=nosplit_re)
@@ -101,8 +81,7 @@ class BaselineModel:
         self._tree: Dict[str,ConstructionNode] = {}
 
         # Flag to indicate the mode in which the model is operating
-        # NORMAL: old Baseline, EM: EM+Prune, SEGMENT_ONLY: reduced
-        self._mode = Mode.EM if use_em else Mode.NORMAL
+        self._mode = Mode.NORMAL
 
         # Flag to indicate whether semi-supervised training is used
         self._supervised = False
@@ -111,14 +90,7 @@ class BaselineModel:
         # self._lexicon_coding = LexiconEncoding()
         # self._corpus_coding = CorpusEncoding(self._lexicon_coding)
         # self._annot_coding = None
-
-        if use_em:
-            self.cost = EmCost(self.cc, corpusweight, nolexcost, freq_distr)
-            self.cost.load_lexicon(em_substr)
-            self.em_autotune_alpha = False  # overridden later
-            self._first_prune = True
-        else:
-            self.cost = Cost(self.cc, corpusweight)
+        self.cost = Cost(self.cc, corpusweight)  # Overridden in EM.
 
         # Set corpus weight updater
         self._corpus_weight_updater = None
@@ -146,11 +118,11 @@ class BaselineModel:
         """Return the number of construction types."""
         return self.cost.types() - 1  # do not include boundary
 
-    def _check_segment_only(self):
+    def _ensure_not_restricted(self):
         if self._segment_only:
             raise SegmentOnlyModelException()
 
-    def _check_normal_mode(self):
+    def _ensure_baseline(self):
         if not self._mode == Mode.NORMAL:
             raise Exception('Model must be in normal mode')
 
@@ -200,9 +172,9 @@ class BaselineModel:
 
         # Collect constructions from the most probable segmentations
         # and add missing compounds also to the unannotated data
-        constructions = collections.Counter()
+        constructions = Counter()
         for compound, alternatives in self.annotations.items():
-            if not compound in self._tree:
+            if compound not in self._tree:
                 self._add_compound(compound, 1)
 
             analysis, cost = self._best_analysis(alternatives)
@@ -235,15 +207,12 @@ class BaselineModel:
     def _add_compound(self, compound: str, c: int):
         """Add compound with count c to data."""
         self.cost.update_boundaries(compound, c)
-        if self._mode == Mode.NORMAL:
-            self._modify_construction_count(compound, c)
-            self._tree[compound].rcount += c
-        else:
-            self._tree[compound] = ConstructionNode(c, c, [])
+        self._modify_construction_count(compound, c)
+        self._tree[compound].rcount += c
 
     def _remove(self, construction: str):
         """Remove construction from model."""
-        self._check_normal_mode()
+        self._ensure_baseline()
         rcount, count, splitloc = self._tree[construction]
         self._modify_construction_count(construction, -count)
         return rcount, count
@@ -252,7 +221,7 @@ class BaselineModel:
         """Clear analysis of a compound from model"""
         pass
 
-    def _set_compound_analysis(self, compound, parts):
+    def _set_compound_analysis(self, compound: str, parts):
         """Set analysis of compound to according to given segmentation.
 
         Arguments:
@@ -260,7 +229,7 @@ class BaselineModel:
             parts: desired constructions of the compound
 
         """
-        self._check_normal_mode()
+        self._ensure_baseline()
         parts = list(parts)
         if len(parts) == 1:
             rcount, count = self._remove(compound)
@@ -287,7 +256,7 @@ class BaselineModel:
         self._counter[construction] += 1
         return False
 
-    def _viterbi_optimize(self, compound, addcount=0, maxlen=30):
+    def _viterbi_optimize(self, compound: str, addcount: int=0, maxlen: int=30):
         """Optimize segmentation of the compound using the Viterbi algorithm.
 
         Arguments:
@@ -298,7 +267,7 @@ class BaselineModel:
         Returns list of segments.
 
         """
-        self._check_normal_mode()
+        self._ensure_baseline()
         if self._use_skips and self._test_skip(compound):
             return self.segment(compound)
 
@@ -310,13 +279,13 @@ class BaselineModel:
         self._set_compound_analysis(compound, constructions)
         return constructions
 
-    def _recursive_optimize(self, compound):
+    def _recursive_optimize(self, compound: str):
         """Optimize segmentation of the compound using recursive splitting.
 
         Returns list of segments.
 
         """
-        self._check_normal_mode()
+        self._ensure_baseline()
         # if self._use_skips and self._test_skip(compound):
         #     return self.segment(compound)
         # Collect forced subsegments
@@ -332,7 +301,7 @@ class BaselineModel:
             constructions += self._recursive_split(part)
         return constructions
 
-    def _recursive_split(self, construction):
+    def _recursive_split(self, construction: str):
         """Optimize segmentation of the construction by recursive splitting.
 
         Returns list of segments.
@@ -377,7 +346,7 @@ class BaselineModel:
             self._modify_construction_count(construction, count)
             return [construction]
 
-    def _modify_construction_count(self, construction, dcount):
+    def _modify_construction_count(self, construction: str, dcount: int):
         """Modify the count of construction by dcount.
 
         For virtual constructions, recurses to child nodes in the
@@ -410,13 +379,13 @@ class BaselineModel:
 
     def get_compounds(self):
         """Return the compound types stored by the model."""
-        self._check_segment_only()
+        self._ensure_not_restricted()
         return [w for w, node in self._tree.items()
                 if node.rcount > 0]
 
     def get_compound_counts(self):
         """Return the compound types stored by the model."""
-        self._check_segment_only()
+        self._ensure_not_restricted()
         return [(w, node.rcount) for (w, node) in self._tree.items()
                 if node.rcount > 0]
 
@@ -431,14 +400,14 @@ class BaselineModel:
 
     def get_segmentations(self):
         """Retrieve segmentations for all compounds encoded by the model."""
-        self._check_normal_mode()
+        self._ensure_baseline()
         for w in sorted(self._tree.keys()):
             c = self._tree[w].rcount
             if c > 0:
                 yield c, w, self.segment(w)
 
     def get_pseudomodel(self, viterbismooth, viterbimaxlen):
-        self._check_segment_only()
+        self._ensure_not_restricted()
         for w in sorted(self._tree.keys()):
             node = self._tree[w]
             if node.rcount == 0:
@@ -457,17 +426,20 @@ class BaselineModel:
         the total cost.
 
         """
-        self._check_segment_only()
+        self._ensure_not_restricted()
         for dp in data:
-            self._add_compound(dp.compound, dp.count)
-            if self._mode == Mode.NORMAL:
-                self._clear_compound_analysis(dp.compound)
-                self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+            self._load_compound(dp)
         return self.get_cost()
+
+    def _load_compound(self, dp: DataPoint):
+        self._add_compound(dp.compound, dp.count)
+
+        self._clear_compound_analysis(dp.compound)
+        self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
 
     # FIXME: refactor?
     def load_segmentations(self, segmentations):
-        self._check_normal_mode()
+        self._ensure_baseline()
         for count, compound, constructions in segmentations:
             splitlocs = tuple(self.cc.parts_to_splitlocs(constructions))
             self._add_compound(compound, count)
@@ -489,7 +461,7 @@ class BaselineModel:
         data. For segmenting new words, use viterbi_segment(compound).
 
         """
-        self._check_normal_mode()
+        self._ensure_baseline()
         _, _, splitloc = self._tree[compound]
         constructions = []
         if splitloc:
@@ -499,251 +471,6 @@ class BaselineModel:
             constructions.append(compound)
 
         return constructions
-
-    def e_step(self, maxlen: int):
-        expected = collections.Counter()
-        compounds = list(self.get_compound_counts())
-        tot_cost = 0
-        for compound, freq in compounds:
-            w_expected, cost = self._forward_backward(compound, freq, maxlen)
-            expected.update(w_expected)
-            tot_cost += cost
-        return expected, tot_cost
-
-    def e_step_hard(self, maxlen: int):
-        expected = collections.Counter()
-        compounds = list(self.get_compound_counts())
-        tot_cost = 0
-        for compound, freq in compounds:
-            constructions, cost = self.viterbi_segment(
-                compound, addcount=0.0, maxlen=maxlen)
-            for cons in constructions:
-                expected[cons] += freq
-            tot_cost += cost
-        return expected, tot_cost
-
-    def m_step(self, expected: Dict[str,int], expected_freq_threshold: int, noexpdigamma: bool=False):
-        # prune out infrequent
-        # FIXME: is protecting length 1 useful? max(c, 1e-6))?
-        expected = collections.Counter(
-            dict((w, c) for (w, c) in expected.items()
-                 if c > expected_freq_threshold or len(w) == 1))
-
-        if not noexpdigamma:
-            # apply exp digamma for Bayesianified/DPified EM
-            # acts as a sparse prior
-            # https://cs.stanford.edu/~pliang/papers/tutorial-acl2007-talk.pdf
-            tot = sum(expected.values())
-            multiplier = tot / math.exp(digamma(tot))
-            for construction in expected.keys():
-                expected[construction] = math.exp(digamma(expected[construction])) * multiplier
-
-        # set model parameters
-        self.cost.counts = expected
-
-    def prune_lexicon(self, prune_criterion, lateen: str, maxlen: int, expected_freq_threshold: int):
-        self.cost.reset()
-        if lateen == 'prune':
-            em_params = copy.deepcopy(self.cost)
-            _logger.info('Lateen Prune: using Viterbi counts for pruning')
-            expected, cost = self.e_step_hard(maxlen=maxlen)
-            self.m_step(
-                expected,
-                expected_freq_threshold=expected_freq_threshold)
-        prune_stats = list(self.compute_prune_stats())
-        pruned, done = prune_criterion(prune_stats)
-        n_pruned = len(pruned)
-        if lateen == 'prune':
-            _logger.info('Lateen Prune: restoring soft EM counts')
-            del self.cost
-            self.cost = em_params
-        for construction in pruned:
-            # prune out selected constructions
-            count = self.cost.counts[construction]
-            self.cost.update(construction, -count)
-            del self.cost.counts[construction]
-        self._first_prune = False
-        return self.get_cost(), done
-
-    def compute_prune_stats(self):
-        orig_lc, orig_cc = self.cost.cost_before_tuning()
-        constructions = list(w for w, c in self.cost.counts.most_common())
-        current_alpha = self.get_corpus_coding_weight()
-        for construction in constructions:
-            if len(construction) == 1:
-                yield PruneStats(construction, -math.inf, 0, 0, 0, PruneDecision.NEVER_CHAR)
-                continue
-            # assume all probability mass goes to viterbi segmentation
-            replacement, _ = self.viterbi_segment(
-                construction, taboo=[construction], addcount=0)
-            if replacement == construction:
-                yield PruneStats(construction, -math.inf, 0, 0, 0, PruneDecision.NEVER_NO_ALT)
-                continue
-            count = self.cost.counts[construction]
-
-            # apply change
-            self.cost.update(construction, -count)
-            for replcons in replacement:
-                self.cost.update(replcons, count)
-            lc, cc = self.cost.cost_before_tuning()
-            # revert change
-            self.cost.update(construction, count)
-            for replcons in replacement:
-                self.cost.update(replcons, -count)
-
-            delta_lc = lc - orig_lc
-            delta_cc = cc - orig_cc
-            threshold_alpha, delta_cost, decision = self.prune_cost_at_alpha(
-                current_alpha, delta_lc, delta_cc)
-            if self._supervised:
-                # this only protects currently active annotations
-                if self.cost._annot_coding.constructions.get(construction, 0) > 0:
-                    decision = PruneDecision.NEVER_SUPERVISED
-            yield PruneStats(construction,
-                             threshold_alpha,
-                             delta_lc, delta_cc,
-                             delta_cost, decision)
-
-    def prune_cost_at_alpha(self, alpha, delta_lc, delta_cc):
-        delta_cost = delta_lc + (alpha * delta_cc)
-        # tuning can't affect if both deltas have the same sign
-        if delta_lc < 0 and delta_cc < 0:
-            decision = PruneDecision.ALWAYS
-            threshold_alpha = math.inf
-        elif delta_lc > 0 and delta_cc > 0:
-            decision = PruneDecision.NEVER_DBL
-            threshold_alpha = -math.inf
-        else:
-            # if deltas have opposite sign,
-            # compute the threshold alpha for which they cancel out
-            threshold_alpha = abs(delta_lc / (delta_cc + EPS))
-            # decicion based on current alpha
-            decision = PruneDecision.GAIN if delta_cost < 0 else PruneDecision.LOSS
-        return threshold_alpha, delta_cost, decision
-
-    def reweight_prune_stats(self, prune_stats, optimal_alpha: float):
-        for stat in prune_stats:
-            threshold_alpha, delta_cost, decision = self.prune_cost_at_alpha(optimal_alpha, stat.delta_lc, stat.delta_cc)
-            yield PruneStats(
-                stat.construction,
-                stat.threshold_alpha,
-                stat.delta_lc, stat.delta_cc,
-                delta_cost,
-                decision
-            )
-
-    def prune_criterion_lexicon_size(self, proportion, goal_lexicon):
-        # prune at most proportion. prune until goal_lexicon is reached
-        def prune_criterion(prune_stats):
-            n_tot = len(prune_stats)
-            max_prune_prop = int(math.ceil(n_tot * proportion))
-            max_prune_goal = max(0, int(n_tot - goal_lexicon))
-            max_prune = min(max_prune_prop, max_prune_goal)
-            # done unless epoch quota was the stopping reason
-            done = max_prune_goal <= max_prune_prop
-            prune_stats.sort(key=lambda x: (x.decision.value, x.delta_cost))
-            pruned = [x.construction for x in prune_stats[:max_prune]]
-            return pruned, done
-        return prune_criterion
-
-    def prune_criterion_mdl(self, proportion):
-        # prune at most proportion. prune based on decision
-        def prune_criterion(prune_stats):
-            n_tot = len(prune_stats)
-            max_prune_prop = int(math.ceil(n_tot * proportion))
-            prune_stats.sort(key=lambda x: (x.decision.value, x.delta_cost))
-            pruned = []
-            for (i, stat) in enumerate(prune_stats):
-                if i >= max_prune_prop:
-                    return pruned, False
-                if stat.decision not in {PruneDecision.ALWAYS, PruneDecision.GAIN}:
-                    return pruned, True
-                pruned.append(stat.construction)
-            # pruned everything
-            _logger.info('pruned everything!')
-            return pruned, True
-        return prune_criterion
-
-    def prune_criterion_autotune(self, proportion, goal_lexicon, first_prune_proportion=None):
-        # determine optimal alpha. prune at most proportion. prune based on decision
-        if first_prune_proportion is None:
-            first_prune_proportion = proportion
-        def prune_criterion(prune_stats: List[PruneStats]):
-            # determine optimal alpha
-            if len(prune_stats) < goal_lexicon:
-                _logger.info('already below goal')
-                return [], True
-            prune_stats.sort(key=lambda x: (x.decision.value, -x.threshold_alpha))
-            optimal_alpha = prune_stats[-int(goal_lexicon)].threshold_alpha
-            if optimal_alpha == -math.inf:
-                _logger.info('cannot reach goal lexicon by tuning: too many always keep')
-                optimal_alpha = min(x.threshold_alpha for x in prune_stats
-                                    if x.decision.value in (PruneDecision.GAIN, PruneDecision.LOSS))
-            if optimal_alpha == math.inf:
-                _logger.info('cannot reach goal lexicon by tuning: infinite alpha')
-                optimal_alpha = max(x.threshold_alpha for x in prune_stats
-                                    if x.decision.value in (PruneDecision.GAIN, PruneDecision.LOSS))
-            _logger.info("Corpus weight set to {}".format(optimal_alpha))
-            self.set_corpus_coding_weight(optimal_alpha)
-            prune_stats = list(self.reweight_prune_stats(prune_stats, optimal_alpha))
-
-            # continue with pruning
-            n_tot = len(prune_stats)
-            prop = first_prune_proportion if self._first_prune else proportion
-            max_prune_prop = int(math.ceil(n_tot * prop))
-            max_prune_goal = max(0, int(n_tot - goal_lexicon))
-            max_prune = min(max_prune_prop, max_prune_goal)
-            # done unless epoch quota was the stopping reason
-            done = max_prune_goal <= max_prune_prop
-            prune_stats.sort(key=lambda x: (x.decision.value, x.delta_cost))
-            pruned = []
-            for (i, stat) in enumerate(prune_stats):
-                if i >= max_prune:
-                    return pruned, done
-                if stat.decision not in {PruneDecision.ALWAYS, PruneDecision.GAIN}:
-                    return pruned, done
-                pruned.append(stat.construction)
-            # pruned everything
-            _logger.info('pruned everything!')
-            return pruned, True
-        return prune_criterion
-
-    def train_em_prune(self, prune_criterion,
-                       max_epochs=5, sub_epochs=3,
-                       expected_freq_threshold=0.5,
-                       maxlen=30, lateen='none', noexpdigamma=False):
-        done = False
-        for epoch in range(max_epochs):
-            for sub_epoch in range(sub_epochs):
-                # E-step
-                if lateen == 'full' and sub_epoch == sub_epochs - 1:
-                    _logger.info('Lateen EM: using Viterbi e-step')
-                    expected, cost = self.e_step_hard(maxlen=maxlen)
-                else:
-                    expected, cost = self.e_step(maxlen=maxlen)
-                _logger.info("E-step cost: %s tokens: %s" % (cost, self.cost.all_tokens()))
-                if self._supervised:
-                    self._update_annotation_choices()
-                    self.cost._annot_coding.update_weight()
-                    for constr, count in self.cost._annot_coding.constructions.items():
-                        expected[constr] += self.cost._annot_coding.weight * count
-                # M-step
-                self.m_step(
-                    expected,
-                    expected_freq_threshold=expected_freq_threshold,
-                    noexpdigamma=noexpdigamma)
-            if done:
-                break
-            # cost-based pruning of lexicon
-            cost, done = self.prune_lexicon(prune_criterion, lateen,
-                maxlen=maxlen, expected_freq_threshold=expected_freq_threshold)
-            lc, cc = self.cost.cost_before_tuning()
-            _logger.info("Cost after pruning: %s types: %s tokens: %s" %
-                (cost, self.cost.types(), self.cost.all_tokens()))
-            _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
-            if done:
-                _logger.info('Reached pruning goal')
-        return epoch, self.get_cost()
 
     def train_batch(self, algorithm='recursive', algorithm_params=(),
                     finish_threshold=0.005, max_epochs=None):
@@ -767,7 +494,7 @@ class BaselineModel:
             max_epochs: maximum number of epochs to train
 
         """
-        self._check_normal_mode()
+        self._ensure_baseline()
         epochs = 0
         forced_epochs = max(1, self._epoch_update(epochs))
         newcost = self.get_cost()
@@ -858,7 +585,7 @@ class BaselineModel:
             max_epochs: maximum number of epochs to train
 
         """
-        self._check_normal_mode()
+        self._ensure_baseline()
         if count_modifier is not None:
             counts = {}
 
@@ -903,6 +630,10 @@ class BaselineModel:
         newcost = self.get_cost()
         _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
         return epochs, newcost
+
+    def _getViterbiBoundaryCost(self) -> float:
+        return math.log(self.cost.tokens() + self.cost.compound_tokens()) \
+                - math.log(self.cost.compound_tokens())
 
     def viterbi_segment(self, compound, addcount=1.0, maxlen=30,
                         allow_longer_unk_splits=False,
@@ -981,12 +712,7 @@ class BaselineModel:
             path = grid[path][1]
 
         constructions = list(self.cc.splitn(compound, list(reversed(splitlocs))))
-
-        # Add boundary cost
-        if self._mode == Mode.NORMAL:
-            cost += (math.log(self.cost.tokens() +
-                            self.cost.compound_tokens()) -
-                    math.log(self.cost.compound_tokens()))
+        cost += self._getViterbiBoundaryCost()
         return constructions, cost
 
     def sample_segment(self, compound: str, theta: float=0.5, maxlen: int=30, taboo: Iterable[str]=None):
@@ -1156,7 +882,7 @@ class BaselineModel:
             grid_beta[t] = (totcost, None)
 
         ## Merge pass
-        w_expected = collections.Counter()
+        w_expected = Counter()
         totcost = grid_alpha['stop'][0]
         # grid_alpha['stop'][0], grid_beta['start'][0] are approx equal
         for t in itertools.chain(self.cc.split_locations(compound), ['stop']):
@@ -1183,7 +909,7 @@ class BaselineModel:
         return w_expected, freq * totcost
 
     #TODO project lambda
-    def forward_logprob(self, compound):
+    def forward_logprob(self, compound: str):
         """Find log-probability of a compound using the forward algorithm.
 
         Arguments:
@@ -1196,11 +922,12 @@ class BaselineModel:
         """
         clen = len(compound)
         grid = [0.0]
-        if self._corpus_coding.tokens + self._corpus_coding.boundaries > 0:
-            logtokens = math.log(self._corpus_coding.tokens +
-                                 self._corpus_coding.boundaries)
+        if self.cost._corpus_coding.tokens + self.cost._corpus_coding.boundaries > 0:
+            logtokens = math.log(self.cost._corpus_coding.tokens +
+                                 self.cost._corpus_coding.boundaries)
         else:
             logtokens = 0
+
         # Forward main loop
         for t in range(1, clen + 1):
             # Sum probabilities from all paths to the current node.
@@ -1220,14 +947,12 @@ class BaselineModel:
             else:
                 grid.append(-self.penalty)
         cost = grid[-1]
-        # Add boundary cost
-        cost += (math.log(self._corpus_coding.tokens +
-                          self._corpus_coding.boundaries) -
-                 math.log(self._corpus_coding.boundaries))
+
+        cost += self._getViterbiBoundaryCost()
         return cost
 
-    def viterbi_nbest(self, compound, n, addcount=0.0, theta=1.0, maxlen=30,
-                      allow_longer_unk_splits=False):
+    def viterbi_nbest(self, compound: str, n: int, addcount: float=0.0, theta: float=1.0, maxlen: int=30,
+                      allow_longer_unk_splits: bool=False):
         """Find top-n optimal segmentations using the Viterbi algorithm.
 
         Arguments:
@@ -1306,11 +1031,7 @@ class BaselineModel:
                     if lt is None:
                         break
             constructions.reverse()
-            # Add boundary cost
-            if self._mode == Mode.NORMAL:
-                cost += (math.log(self.cost.tokens() +
-                                self.cost.compound_tokens()) -
-                        math.log(self.cost.compound_tokens()))
+            cost += self._getViterbiBoundaryCost()
             results.append((cost, constructions))
         if len(results) == 0:
             results = [(badlikelihood, [compound])]
@@ -1320,7 +1041,7 @@ class BaselineModel:
         return self.cost._corpus_coding.weight
 
     def set_corpus_coding_weight(self, weight: float):
-        self._check_segment_only()
+        self._ensure_not_restricted()
         self.cost.set_corpus_coding_weight(weight)
 
     def make_segment_only(self):
@@ -1330,15 +1051,15 @@ class BaselineModel:
         doing so would throw an exception.
 
         """
-        self._check_normal_mode()
-        self._num_compounds = len(self.get_compounds())
-        self._segment_only = True
+        self._ensure_baseline()
+        #self._num_compounds = len(self.get_compounds())
+        self._mode = Mode.SEGMENT_ONLY
 
         self._tree = {k: v for (k, v) in self._tree.items()
                       if not v.splitloc}
 
     def clear_segmentation(self):
-        self._check_normal_mode()
+        self._ensure_baseline()
         for compound in self.get_compounds():
             self._clear_compound_analysis(compound)
             self._set_compound_analysis(compound, [compound])
@@ -1352,3 +1073,184 @@ class BaselineModel:
         if self.cc._nosplit:
             params['nosplit'] = self.cc._nosplit.pattern
         return params
+
+
+class LateenMode(Enum):
+    NONE = 1
+    FULL = 2
+    PRUNE = 3
+
+
+class MorfessorEMPrune(BaselineModel):
+    def __init__(self,
+                 corpusweight, use_skips, force_splits, nosplit_re,
+                 em_substr=None,
+                 nolexcost: bool=False,
+                 freq_distr: FrequencyDistributionMode=FrequencyDistributionMode.BASELINE):
+        """
+        :param nolexcost: ignore lexicon cost with EM+prune
+        :param em_substr: substring lexicon
+        :param freq_distr: ?
+        """
+        super().__init__(corpusweight, use_skips, force_splits, nosplit_re)
+        self._mode = Mode.EM
+
+        self.cost = EmCost(self.cc, corpusweight, nolexcost, freq_distr)
+        self.cost.load_lexicon(em_substr)
+        self._first_prune = True
+
+    def e_step(self, maxlen: int):
+        expected = Counter()
+        compounds = list(self.get_compound_counts())
+        tot_cost = 0
+        for compound, freq in compounds:
+            w_expected, cost = self._forward_backward(compound, freq, maxlen)
+            expected.update(w_expected)
+            tot_cost += cost
+        return expected, tot_cost
+
+    def e_step_hard(self, maxlen: int) -> Tuple[Counter[str],float]:
+        expected = Counter()
+        compounds = list(self.get_compound_counts())
+        tot_cost = 0
+        for compound, freq in compounds:
+            constructions, cost = self.viterbi_segment(compound, addcount=0.0, maxlen=maxlen)
+            for cons in constructions:
+                expected[cons] += freq
+            tot_cost += cost
+        return expected, tot_cost
+
+    def m_step(self, expected: Counter[str], expected_freq_threshold: int, noexpdigamma: bool=False):
+        # prune out infrequent
+        # FIXME: is protecting length 1 useful? max(c, 1e-6))?
+        expected = Counter(
+            dict((w, c) for (w, c) in expected.items()
+                 if c > expected_freq_threshold or len(w) == 1))
+
+        if not noexpdigamma:
+            # apply exp digamma for Bayesianified/DPified EM
+            # acts as a sparse prior
+            # https://cs.stanford.edu/~pliang/papers/tutorial-acl2007-talk.pdf
+            tot = sum(expected.values())
+            multiplier = tot / math.exp(digamma(tot))
+            for construction in expected.keys():
+                expected[construction] = math.exp(digamma(expected[construction])) * multiplier
+
+        # set model parameters
+        self.cost.counts = expected
+
+    def prune_lexicon(self, prune_criterion: PruningCriterion, lateen: LateenMode, maxlen: int, expected_freq_threshold: int):
+        self.cost.reset()
+        if lateen == LateenMode.PRUNE:
+            em_params = copy.deepcopy(self.cost)
+            _logger.info('Lateen Prune: using Viterbi counts for pruning')
+            expected, cost = self.e_step_hard(maxlen=maxlen)
+            self.m_step(expected, expected_freq_threshold=expected_freq_threshold)
+
+            prune_stats = list(self.compute_prune_stats())
+            pruned, done = prune_criterion.prune(prune_stats)
+            n_pruned = len(pruned)
+
+            _logger.info('Lateen Prune: restoring soft EM counts')
+            del self.cost
+            self.cost = em_params
+        else:
+            prune_stats = list(self.compute_prune_stats())
+            pruned, done = prune_criterion.prune(prune_stats)
+            n_pruned = len(pruned)
+
+        for construction in pruned:
+            # prune out selected constructions
+            count = self.cost.counts[construction]
+            self.cost.update(construction, -count)
+            del self.cost.counts[construction]
+
+        self._first_prune = False
+        return self.get_cost(), done
+
+    def compute_prune_stats(self):
+        orig_lc, orig_cc = self.cost.cost_before_tuning()
+        constructions = list(w for w, c in self.cost.counts.most_common())
+        current_alpha = self.get_corpus_coding_weight()
+        for construction in constructions:
+            if len(construction) == 1:
+                yield PruneStats(construction, -math.inf, 0, 0, 0, PruneDecision.NEVER_CHAR)
+                continue
+
+            # assume all probability mass goes to viterbi segmentation
+            replacement, _ = self.viterbi_segment(construction, taboo=[construction], addcount=0)
+            if replacement == construction:
+                yield PruneStats(construction, -math.inf, 0, 0, 0, PruneDecision.NEVER_NO_ALT)
+                continue
+
+            count = self.cost.counts[construction]
+
+            # apply change
+            self.cost.update(construction, -count)
+            for replcons in replacement:
+                self.cost.update(replcons, count)
+            lc, cc = self.cost.cost_before_tuning()
+            # revert change
+            self.cost.update(construction, count)
+            for replcons in replacement:
+                self.cost.update(replcons, -count)
+
+            delta_lc = lc - orig_lc
+            delta_cc = cc - orig_cc
+            threshold_alpha, delta_cost, decision = prune_cost_at_alpha(current_alpha, delta_lc, delta_cc)
+            if self._supervised:
+                # this only protects currently active annotations
+                if self.cost._annot_coding.constructions.get(construction, 0) > 0:
+                    decision = PruneDecision.NEVER_SUPERVISED
+            yield PruneStats(construction,
+                             threshold_alpha,
+                             delta_lc, delta_cc,
+                             delta_cost, decision)
+
+    def train_em_prune(self, prune_criterion: PruningCriterion,
+                       max_epochs: int=5, sub_epochs: int=3,
+                       expected_freq_threshold: float=0.5,
+                       maxlen: int=30, lateen: LateenMode=LateenMode.NONE, noexpdigamma: bool=False):
+        done = False
+        for epoch in range(max_epochs):
+            for sub_epoch in range(sub_epochs):
+                # E-step
+                if lateen == LateenMode.FULL and sub_epoch == sub_epochs - 1:
+                    _logger.info('Lateen EM: using Viterbi e-step')
+                    expected, cost = self.e_step_hard(maxlen=maxlen)
+                else:
+                    expected, cost = self.e_step(maxlen=maxlen)
+                _logger.info("E-step cost: %s tokens: %s" % (cost, self.cost.all_tokens()))
+                if self._supervised:
+                    self._update_annotation_choices()
+                    self.cost._annot_coding.update_weight()
+                    for constr, count in self.cost._annot_coding.constructions.items():
+                        expected[constr] += self.cost._annot_coding.weight * count
+                # M-step
+                self.m_step(
+                    expected,
+                    expected_freq_threshold=expected_freq_threshold,
+                    noexpdigamma=noexpdigamma
+                )
+            if done:
+                break
+            # cost-based pruning of lexicon
+            cost, done = self.prune_lexicon(prune_criterion, lateen,
+                                            maxlen=maxlen, expected_freq_threshold=expected_freq_threshold)
+            lc, cc = self.cost.cost_before_tuning()
+            _logger.info("Cost after pruning: %s types: %s tokens: %s" %
+                (cost, self.cost.types(), self.cost.all_tokens()))
+            _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
+            if done:
+                _logger.info('Reached pruning goal')
+        return epoch, self.get_cost()
+
+    def _getViterbiBoundaryCost(self) -> float:
+        return 0.0
+
+    def _add_compound(self, compound: str, c: int):
+        self.cost.update_boundaries(compound, c)
+        self._tree[compound] = ConstructionNode(c, c, [])
+
+    def _load_compound(self, dp: DataPoint):
+        self._add_compound(dp.compound, dp.count)
