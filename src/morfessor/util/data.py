@@ -10,6 +10,9 @@ class DataPoint:
     compound: str
     splitlocs: Tuple[int,...]
 
+    def __lt__(self, other: "DataPoint"):
+        return self.count < other.count or self.compound < other.compound
+
 
 def merge_counts(data):
     store = {}

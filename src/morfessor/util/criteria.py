@@ -72,7 +72,7 @@ class LexiconSizePruningCriterion(PruningCriterion):
         return pruned, done
 
 
-from ..model.tokeniser import BaselineModel, _logger, EPS
+from ..models.baseline import BaselineModel, _logger, EPS
 
 class MDLPruningCriterion(PruningCriterion):
     """
