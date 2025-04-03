@@ -4,7 +4,7 @@ from collections import Counter
 from enum import Enum
 from dataclasses import dataclass
 
-import copy
+from copy import deepcopy
 import heapq
 import itertools
 import logging
@@ -20,7 +20,7 @@ from ..util.corpus import FixedCorpusWeight
 from ..util.utils import _progress, tail, logsumexp, categorical
 from ..util.exception import MorfessorException, SegmentOnlyModelException
 from ..util.data import DataPoint
-from ..util.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha
+from ..util.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha, AutotunePruningCriterion
 
 _logger = logging.getLogger(__name__)
 EPS = 1e-8
@@ -37,12 +37,6 @@ class ConstructionNode:
 class SimpleConstrNode:
     count: int
     splitloc: Union[int, Tuple[int,...]]
-
-
-class Mode(Enum):
-    NORMAL       = 1  # old Baseline
-    EM           = 2  # EM+Prune
-    SEGMENT_ONLY = 3  # reduced (TODO: what is this?)
 
 
 class BaselineModel:
@@ -81,7 +75,7 @@ class BaselineModel:
         self._tree: Dict[str,ConstructionNode] = {}
 
         # Flag to indicate the mode in which the model is operating
-        self._mode = Mode.NORMAL
+        self._segment_only = False
 
         # Flag to indicate whether semi-supervised training is used
         self._supervised = False
@@ -105,10 +99,6 @@ class BaselineModel:
             self._corpus_weight_updater = corpus_weight
 
     @property
-    def _segment_only(self):
-        return self._mode == Mode.SEGMENT_ONLY
-
-    @property
     def tokens(self):
         """Return the number of construction tokens."""
         return self.cost.tokens()
@@ -122,9 +112,8 @@ class BaselineModel:
         if self._segment_only:
             raise SegmentOnlyModelException()
 
-    def _ensure_baseline(self):
-        if not self._mode == Mode.NORMAL:
-            raise Exception('Model must be in normal mode')
+    def _ensure_baseline(self):  # Raise error only if you are a subclass.
+        pass
 
     def _epoch_checks(self):
         """Apply per epoch checks"""
@@ -477,7 +466,7 @@ class BaselineModel:
         """Train the model in batch fashion.
 
         The model is trained with the data already loaded into the model (by
-        using an existing model or calling one of the load\_ methods).
+        using an existing model or calling one of the load_... methods).
 
         In each iteration (epoch) all compounds in the training data are
         optimized once, in a random order. If applicable, corpus weight,
@@ -1053,7 +1042,7 @@ class BaselineModel:
         """
         self._ensure_baseline()
         #self._num_compounds = len(self.get_compounds())
-        self._mode = Mode.SEGMENT_ONLY
+        self._segment_only = True
 
         self._tree = {k: v for (k, v) in self._tree.items()
                       if not v.splitloc}
@@ -1093,11 +1082,9 @@ class MorfessorEMPrune(BaselineModel):
         :param freq_distr: ?
         """
         super().__init__(corpusweight, use_skips, force_splits, nosplit_re)
-        self._mode = Mode.EM
 
         self.cost = EmCost(self.cc, corpusweight, nolexcost, freq_distr)
         self.cost.load_lexicon(em_substr)
-        self._first_prune = True
 
     def e_step(self, maxlen: int):
         expected = Counter()
@@ -1142,7 +1129,7 @@ class MorfessorEMPrune(BaselineModel):
     def prune_lexicon(self, prune_criterion: PruningCriterion, lateen: LateenMode, maxlen: int, expected_freq_threshold: int):
         self.cost.reset()
         if lateen == LateenMode.PRUNE:
-            em_params = copy.deepcopy(self.cost)
+            em_params = deepcopy(self.cost)
             _logger.info('Lateen Prune: using Viterbi counts for pruning')
             expected, cost = self.e_step_hard(maxlen=maxlen)
             self.m_step(expected, expected_freq_threshold=expected_freq_threshold)
@@ -1151,13 +1138,19 @@ class MorfessorEMPrune(BaselineModel):
             pruned, done = prune_criterion.prune(prune_stats)
             n_pruned = len(pruned)
 
+            if isinstance(prune_criterion, AutotunePruningCriterion):
+                self.set_corpus_coding_weight(prune_criterion.optimal_alpha)
+
             _logger.info('Lateen Prune: restoring soft EM counts')
-            del self.cost
+            del self.cost  # TODO [Bauwens]: What is the point of the criterion setting alpha in self.cost above, if you're going to replace it by an earlier deepcopy?
             self.cost = em_params
         else:
             prune_stats = list(self.compute_prune_stats())
             pruned, done = prune_criterion.prune(prune_stats)
             n_pruned = len(pruned)
+
+            if isinstance(prune_criterion, AutotunePruningCriterion):
+                self.set_corpus_coding_weight(prune_criterion.optimal_alpha)
 
         for construction in pruned:
             # prune out selected constructions
@@ -1165,7 +1158,8 @@ class MorfessorEMPrune(BaselineModel):
             self.cost.update(construction, -count)
             del self.cost.counts[construction]
 
-        self._first_prune = False
+        _logger.info(f"Pruned {n_pruned} constructions.")
+
         return self.get_cost(), done
 
     def compute_prune_stats(self):
@@ -1254,3 +1248,6 @@ class MorfessorEMPrune(BaselineModel):
 
     def _load_compound(self, dp: DataPoint):
         self._add_compound(dp.compound, dp.count)
+
+    def _ensure_baseline(self):
+        raise Exception("Tokeniser is not Morfessor Baseline.")

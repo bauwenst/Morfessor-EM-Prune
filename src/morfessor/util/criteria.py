@@ -1,9 +1,13 @@
-from abc import abstractmethod, ABC
 from typing import List, Tuple
+from abc import abstractmethod, ABC
 from dataclasses import dataclass
 from enum import Enum
 
+import logging
 import math
+
+_logger = logging.getLogger(__name__)
+EPS = 1e-6
 
 
 class PruneDecision(Enum):
@@ -72,8 +76,6 @@ class LexiconSizePruningCriterion(PruningCriterion):
         return pruned, done
 
 
-from ..models.baseline import BaselineModel, _logger, EPS
-
 class MDLPruningCriterion(PruningCriterion):
     """
     Prune based on decision.
@@ -104,11 +106,13 @@ class AutotunePruningCriterion(PruningCriterion):
     determine optimal alpha. prune at most proportion. prune based on decision
     """
 
-    def __init__(self, model: BaselineModel, proportion: float, goal_lexicon: int, first_prune_proportion=None):
-        self.model = model
+    def __init__(self, proportion: float, goal_lexicon: int, first_prune_proportion=None):
         self.proportion = proportion
         self.goal_lexicon = goal_lexicon
         self.first_prune_proportion = first_prune_proportion
+
+        self.optimal_alpha = None
+        self.is_first_prune = True
 
     def prune(self, pruning_stats: List[PruneStats]) -> Tuple[List[str], bool]:
         # determine optimal alpha
@@ -126,13 +130,13 @@ class AutotunePruningCriterion(PruningCriterion):
             _logger.info('cannot reach goal lexicon by tuning: infinite alpha')
             optimal_alpha = max(x.threshold_alpha for x in pruning_stats
                                 if x.decision.value in (PruneDecision.GAIN, PruneDecision.LOSS))
-        _logger.info("Corpus weight set to {}".format(optimal_alpha))
-        self.model.set_corpus_coding_weight(optimal_alpha)
+        _logger.info(f"New optimal corpus weight is {optimal_alpha}")
+        self.optimal_alpha = optimal_alpha  # Accessible from the outside.
         prune_stats = list(self.reweight_prune_stats(pruning_stats, optimal_alpha))
 
         # continue with pruning
         n_tot = len(prune_stats)
-        prop = self.first_prune_proportion if self.model._first_prune and self.first_prune_proportion is not None else self.proportion
+        prop = self.first_prune_proportion if self.is_first_prune and self.first_prune_proportion is not None else self.proportion
         max_prune_prop = int(math.ceil(n_tot * prop))
         max_prune_goal = max(0, int(n_tot - self.goal_lexicon))
         max_prune = min(max_prune_prop, max_prune_goal)
@@ -148,6 +152,7 @@ class AutotunePruningCriterion(PruningCriterion):
             pruned.append(stat.construction)
         # pruned everything
         _logger.info('pruned everything!')
+        self.is_first_prune = False
         return pruned, True
 
     def reweight_prune_stats(self, prune_stats, optimal_alpha: float):
