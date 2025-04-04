@@ -34,7 +34,7 @@ class SimpleConstrNode:
     splitloc: Union[int, Tuple[int,...]]
 
 
-class BaselineModel:
+class _CommonMorfessorBase:
     """
     Morfessor Baseline model class.
 
@@ -47,19 +47,21 @@ class BaselineModel:
 
     def __init__(self,
                  corpusweight=None,
-                 use_skips: bool=False,
+                 skip_frequent_reanalysis: bool=False,
                  force_splits=None,
                  nosplit_re=None):
         """Initialize a new model instance.
 
         Arguments:
-            forcesplit_list: force segmentations on the characters in
-                               the given list
+            forcesplit_list: force segmentations on the characters in the given list
             corpusweight: weight for the corpus cost
-            use_skips: randomly skip frequently occurring constructions
-                         to speed up training
-            nosplit_re: regular expression string for preventing splitting
-                          in certain contexts
+            skip_frequent_reanalysis: randomly skip frequently occurring constructions to speed up training.
+                According to the Morfessor 2.0 paper:
+                >    As frequent compounds are encountered many times in
+                >    running text, Morfessor 2.0 includes an option for
+                >    randomly skipping compounds and constructions
+                >    that have been recently analyzed.
+            nosplit_re: regular expression string for preventing splitting in certain contexts
         """
 
         self.cc = BaseConstructionMethods(force_splits=force_splits, nosplit_re=nosplit_re)
@@ -71,9 +73,11 @@ class BaselineModel:
 
         # Flag to indicate the mode in which the model is operating
         self._segment_only = False
+        self._skip_frequent_reanalysis = True
 
         # Flag to indicate whether semi-supervised training is used
         self._supervised = False
+        self._annotations: Dict[str,List[List[str]]] = None
 
         # Cost variables
         # self._lexicon_coding = LexiconEncoding()
@@ -157,7 +161,7 @@ class BaselineModel:
         # Collect constructions from the most probable segmentations
         # and add missing compounds also to the unannotated data
         constructions = Counter()
-        for compound, alternatives in self.annotations.items():
+        for compound, alternatives in self._annotations.items():
             if compound not in self._tree:
                 self._add_compound(compound, 1)
 
@@ -171,7 +175,7 @@ class BaselineModel:
             count = self.get_construction_count(constr)
             self.cost.set_annot_observed(constr, count)
 
-    def _best_analysis(self, choices):
+    def _best_analysis(self, choices: Iterable[List[str]]):
         """Select the best analysis out of the given choices."""
         bestcost = None
         bestanalysis = None
@@ -194,96 +198,21 @@ class BaselineModel:
         self._modify_construction_count(compound, c)
         self._tree[compound].rcount += c
 
-    def _remove(self, construction: str):
-        """Remove construction from model."""
-        self._ensure_baseline()
-        rcount, count, splitloc = self._tree[construction]
-        self._modify_construction_count(construction, -count)
-        return rcount, count
-
-    def _clear_compound_analysis(self, compound):
+    def _clear_compound_analysis(self, compound: str):  # TODO [Bauwens]: Why is this implementation empty?
         """Clear analysis of a compound from model"""
         pass
-
-    def _set_compound_analysis(self, compound: str, parts):
-        """Set analysis of compound to according to given segmentation.
-
-        Arguments:
-            compound: compound to split
-            parts: desired constructions of the compound
-
-        """
-        self._ensure_baseline()
-        parts = list(parts)
-        if len(parts) == 1:
-            rcount, count = self._remove(compound)
-            self._tree[compound] = ConstructionNode(rcount, 0, tuple())
-            self._modify_construction_count(compound, count)
-        else:
-            rcount, count = self._remove(compound)
-
-            splitloc = tuple(self.cc.parts_to_splitlocs(parts))
-            self._tree[compound] = ConstructionNode(rcount, count, splitloc)
-            for constr in parts:
-                self._modify_construction_count(constr, count)
 
     def get_construction_count(self, construction):
         """Return (real) count of the construction."""
         return self.cost.counts.get(construction, 0)
 
-    def _test_skip(self, construction):
+    def _do_skip_analysis(self, construction):
         """Return true if construction should be skipped."""
         if construction in self._counter:
-            t = self._counter[construction]
-            if random.random() > 1.0 / max(1, t):
+            if random.random() > 1.0 / max(1,self._counter[construction]):
                 return True
         self._counter[construction] += 1
         return False
-
-    def _viterbi_optimize(self, compound: str, addcount: int=0, maxlen: int=30):
-        """Optimize segmentation of the compound using the Viterbi algorithm.
-
-        Arguments:
-          compound: compound to optimize
-          addcount: constant for additive smoothing of Viterbi probs
-          maxlen: maximum length for a construction
-
-        Returns list of segments.
-
-        """
-        self._ensure_baseline()
-        if self._use_skips and self._test_skip(compound):
-            return self.segment(compound)
-
-        # Use Viterbi algorithm to optimize the subsegments
-        constructions = []
-        for part in self.cc.splitn(compound, self.cc.force_split_locations(compound)):
-            constructions.extend(self.viterbi_segment(part, addcount=addcount,
-                                                  maxlen=maxlen)[0])
-        self._set_compound_analysis(compound, constructions)
-        return constructions
-
-    def _recursive_optimize(self, compound: str):
-        """Optimize segmentation of the compound using recursive splitting.
-
-        Returns list of segments.
-
-        """
-        self._ensure_baseline()
-        # if self._use_skips and self._test_skip(compound):
-        #     return self.segment(compound)
-        # Collect forced subsegments
-
-        parts = list(self.cc.splitn(compound, self.cc.force_split_locations(compound)))
-        if len(parts) == 1:
-            # just one part
-            return self._recursive_split(compound)
-        self._set_compound_analysis(compound, parts)
-        # Use recursive algorithm to optimize the subsegments
-        constructions = []
-        for part in parts:
-            constructions += self._recursive_split(part)
-        return constructions
 
     def _recursive_split(self, construction: str):
         """Optimize segmentation of the construction by recursive splitting.
@@ -382,14 +311,6 @@ class BaselineModel:
         """Return current model encoding cost."""
         return self.cost.cost()
 
-    def get_segmentations(self):
-        """Retrieve segmentations for all compounds encoded by the model."""
-        self._ensure_baseline()
-        for w in sorted(self._tree.keys()):
-            c = self._tree[w].rcount
-            if c > 0:
-                yield c, w, self.segment(w)
-
     def get_pseudomodel(self, viterbismooth, viterbimaxlen):
         self._ensure_not_restricted()
         for w in sorted(self._tree.keys()):
@@ -400,220 +321,12 @@ class BaselineModel:
                 w, viterbismooth, viterbimaxlen)
             yield (node.rcount, w, constructions)
 
-    def load_data(self, data: Iterable[DataPoint]):
-        """Load data to initialize the model for batch training.
-
-        Arguments:
-            data: iterator of DataPoint tuples
-
-        Adds the compounds in the corpus to the model lexicon. Returns
-        the total cost.
-
-        """
-        self._ensure_not_restricted()
-        for dp in data:
-            self._load_compound(dp)
-        return self.get_cost()
-
-    def _load_compound(self, dp: DataPoint):
-        self._add_compound(dp.compound, dp.count)
-
-        self._clear_compound_analysis(dp.compound)
-        self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
-
-    # FIXME: refactor?
-    def load_segmentations(self, segmentations):
-        self._ensure_baseline()
-        for count, compound, constructions in segmentations:
-            splitlocs = tuple(self.cc.parts_to_splitlocs(constructions))
-            self._add_compound(compound, count)
-            self._clear_compound_analysis(compound)
-            self._set_compound_analysis(compound, self.cc.splitn(compound, splitlocs))
-        return self.get_cost()
-
-    def set_annotations(self, annotations, annotationweight):
+    def load_annotations(self, annotations: Dict[str,List[List[str]]], annotationweight: float):
         self._supervised = True
+        self._annotations = annotations
         self.cost.set_annot_coding_weight(annotationweight)
-        self.annotations = annotations
         self._update_annotation_choices()
         self.cost._annot_coding.update_weight()
-
-    def segment(self, compound: str) -> List[str]:
-        """Segment the compound by looking it up in the model analyses.
-
-        Raises KeyError if compound is not present in the training
-        data. For segmenting new words, use viterbi_segment(compound).
-
-        """
-        self._ensure_baseline()
-        _, _, splitloc = self._tree[compound]
-        constructions = []
-        if splitloc:
-            for part in self.cc.splitn(compound, splitloc):
-                constructions += self.segment(part)
-        else:
-            constructions.append(compound)
-
-        return constructions
-
-    def train_batch(self, algorithm='recursive', algorithm_params=(),
-                    finish_threshold=0.005, max_epochs=None):
-        """Train the model in batch fashion.
-
-        The model is trained with the data already loaded into the model (by
-        using an existing model or calling one of the load_... methods).
-
-        In each iteration (epoch) all compounds in the training data are
-        optimized once, in a random order. If applicable, corpus weight,
-        annotation cost, and random split counters are recalculated after
-        each iteration.
-
-        Arguments:
-            algorithm: string in ('recursive', 'viterbi', 'flatten') 
-                         that indicates the splitting algorithm used.
-            algorithm_params: parameters passed to the splitting algorithm.
-            finish_threshold: the stopping threshold. Training stops when
-                                the improvement of the last iteration is
-                                smaller then finish_threshold * #boundaries
-            max_epochs: maximum number of epochs to train
-
-        """
-        self._ensure_baseline()
-        epochs = 0
-        forced_epochs = max(1, self._epoch_update(epochs))
-        newcost = self.get_cost()
-        compounds = list(self.get_compounds())
-        _logger.info("Compounds in training data: %s types / %s tokens" %
-                     (len(compounds), self.cost.compound_tokens()))
-
-        if algorithm == 'flatten':
-            _logger.info("Flattening analysis tree")
-            for compound in _progress(compounds):
-                parts = self.segment(compound)
-                self._clear_compound_analysis(compound)
-                self._set_compound_analysis(compound, parts)
-            _logger.info("Done.")
-            return 1, self.get_cost()
-
-        _logger.info("Starting batch training")
-        _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
-
-        while True:
-            # One epoch
-            random.shuffle(compounds)
-
-            for w in _progress(compounds):
-                if algorithm == 'recursive':
-                    segments = self._recursive_optimize(w, *algorithm_params)
-                elif algorithm == 'viterbi':
-                    segments = self._viterbi_optimize(w, *algorithm_params)
-                else:
-                    raise MorfessorException("unknown algorithm '%s'" %
-                                             algorithm)
-                _logger.debug("#%s -> %s" %
-                              (w, " + ".join(self.cc.to_string(s) for s in segments)))
-            epochs += 1
-
-            _logger.debug("Cost before epoch update: %s" % self.get_cost())
-            forced_epochs = max(forced_epochs, self._epoch_update(epochs))
-            oldcost = newcost
-            newcost = self.get_cost()
-            lc, cc = self.cost.cost_before_tuning()
-
-            self._epoch_checks()
-
-            _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
-            _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
-            if (forced_epochs == 0 and
-                    newcost >= oldcost - finish_threshold *
-                    self.cost.compound_tokens()):
-                break
-            if forced_epochs > 0:
-                forced_epochs -= 1
-            if max_epochs is not None and epochs >= max_epochs:
-                _logger.info("Max number of epochs reached, stop training")
-                break
-        _logger.info("Done.")
-        return epochs, newcost
-
-    def train_online(self, data, count_modifier=None, epoch_interval=10000,
-                     algorithm='recursive', algorithm_params=(),
-                     init_rand_split=None, max_epochs=None):
-        """Train the model in online fashion.
-
-        The model is trained with the data provided in the data argument.
-        As example the data could come from a generator linked to standard in
-        for live monitoring of the splitting.
-
-        All compounds from data are only optimized once. After online
-        training, batch training could be used for further optimization.
-
-        Epochs are defined as a fixed number of compounds. After each epoch (
-        like in batch training), the annotation cost, and random split counters
-        are recalculated if applicable.
-
-        Arguments:
-            data: iterator of (_, compound_atoms) tuples. The first
-                    argument is ignored, as every occurence of the
-                    compound is taken with count 1
-            count_modifier: function for adjusting the counts of each
-                              compound
-            epoch_interval: number of compounds to process before starting
-                              a new epoch
-            algorithm: string in ('recursive', 'viterbi') that indicates
-                         the splitting algorithm used.
-            algorithm_params: parameters passed to the splitting algorithm.
-            init_rand_split: probability for random splitting a compound to
-                               at any point for initializing the model. None
-                               or 0 means no random splitting.
-            max_epochs: maximum number of epochs to train
-
-        """
-        self._ensure_baseline()
-        if count_modifier is not None:
-            counts = {}
-
-        _logger.info("Starting online training")
-
-        epochs = 0
-        i = 0
-        more_tokens = True
-        while more_tokens:
-            self._epoch_update(epochs)
-            newcost = self.get_cost()
-            _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
-
-            for _ in _progress(range(epoch_interval)):
-                try:
-                    dp = next(data)
-                except StopIteration:
-                    more_tokens = False
-                    break
-
-                self._add_compound(dp.compound, dp.count)
-                self._clear_compound_analysis(dp.compound)
-                self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
-
-                if algorithm == 'recursive':
-                    segments = self._recursive_optimize(dp.compound, *algorithm_params)
-                elif algorithm == 'viterbi':
-                    segments = self._viterbi_optimize(dp.compound, *algorithm_params)
-                else:
-                    raise MorfessorException("unknown algorithm '%s'" %
-                                             algorithm)
-                _logger.debug("#%s: %s -> %s" %
-                              (i, dp.compound, " + ".join(self.cc.to_string(s) for s in segments)))
-                i += 1
-
-            epochs += 1
-            if max_epochs is not None and epochs >= max_epochs:
-                _logger.info("Max number of epochs reached, stop training")
-                break
-
-        self._epoch_update(epochs)
-        newcost = self.get_cost()
-        _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
-        return epochs, newcost
 
     def _getViterbiBoundaryCost(self) -> float:
         return math.log(self.cost.tokens() + self.cost.compound_tokens()) \
@@ -1028,6 +741,50 @@ class BaselineModel:
         self._ensure_not_restricted()
         self.cost.set_corpus_coding_weight(weight)
 
+    def get_params(self):
+        """Returns a dict of hyperparameters."""
+        params = {'corpusweight': self.get_corpus_coding_weight()}
+        if self._supervised:
+            params['annotationweight'] = self.cost._annot_coding.weight
+        params['forcesplit'] = ''.join(sorted(self.cc._force_splits))
+        if self.cc._nosplit:
+            params['nosplit'] = self.cc._nosplit.pattern
+        return params
+
+
+class MorfessorBaseline(_CommonMorfessorBase):
+
+    def load_data(self, data: Iterable[DataPoint]):
+        """Load data to initialize the model for batch training.
+
+        Arguments:
+            data: iterator of DataPoint tuples
+
+        Adds the compounds in the corpus to the model lexicon. Returns
+        the total cost.
+
+        """
+        self._ensure_not_restricted()
+        for dp in data:
+            self._load_compound(dp)
+        return self.get_cost()
+
+    def _load_compound(self, dp: DataPoint):
+        self._add_compound(dp.compound, dp.count)
+
+        self._clear_compound_analysis(dp.compound)
+        self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+
+    # FIXME [Grönroos]: refactor?
+    def load_segmentations(self, segmentations: Iterable[Tuple[int,str,List[str]]]):
+        self._ensure_baseline()
+        for count, compound, constructions in segmentations:
+            splitlocs = tuple(self.cc.parts_to_splitlocs(constructions))
+            self._add_compound(compound, count)
+            self._clear_compound_analysis(compound)
+            self._set_compound_analysis(compound, self.cc.splitn(compound, splitlocs))
+        return self.get_cost()
+
     def make_segment_only(self):
         """Reduce the size of this model by removing all non-morphs from the
         analyses. After calling this method it is not possible anymore to call
@@ -1042,18 +799,266 @@ class BaselineModel:
         self._tree = {k: v for (k, v) in self._tree.items()
                       if not v.splitloc}
 
+    def _remove(self, construction: str):
+        """Remove construction from model."""
+        self._ensure_baseline()
+        rcount, count, splitloc = self._tree[construction]
+        self._modify_construction_count(construction, -count)
+        return rcount, count
+
     def clear_segmentation(self):
         self._ensure_baseline()
         for compound in self.get_compounds():
             self._clear_compound_analysis(compound)
             self._set_compound_analysis(compound, [compound])
 
-    def get_params(self):
-        """Returns a dict of hyperparameters."""
-        params = {'corpusweight': self.get_corpus_coding_weight()}
-        if self._supervised:
-            params['annotationweight'] = self.cost._annot_coding.weight
-        params['forcesplit'] = ''.join(sorted(self.cc._force_splits))
-        if self.cc._nosplit:
-            params['nosplit'] = self.cc._nosplit.pattern
-        return params
+    def _get_stored_analysis(self, compound: str) -> List[str]:
+        """Segment the compound by looking it up in the model analyses.
+
+        Raises KeyError if compound is not present in the training
+        data. For segmenting new words, use viterbi_segment(compound).
+
+        """
+        self._ensure_baseline()
+        _, _, splitloc = self._tree[compound]
+        constructions = []
+        if splitloc:
+            for part in self.cc.splitn(compound, splitloc):
+                constructions += self._get_stored_analysis(part)
+        else:
+            constructions.append(compound)
+
+        return constructions
+
+    def train_batch(self, algorithm='recursive', algorithm_params=(),
+                    finish_threshold=0.005, max_epochs=None):
+        """Train the model in batch fashion.
+
+        The model is trained with the data already loaded into the model (by
+        using an existing model or calling one of the load_... methods).
+
+        In each iteration (epoch) all compounds in the training data are
+        optimized once, in a random order. If applicable, corpus weight,
+        annotation cost, and random split counters are recalculated after
+        each iteration.
+
+        Arguments:
+            algorithm: string in ('recursive', 'viterbi', 'flatten')
+                         that indicates the splitting algorithm used.
+            algorithm_params: parameters passed to the splitting algorithm.
+            finish_threshold: the stopping threshold. Training stops when
+                                the improvement of the last iteration is
+                                smaller then finish_threshold * #boundaries
+            max_epochs: maximum number of epochs to train
+
+        """
+        self._ensure_baseline()
+        epochs = 0
+        forced_epochs = max(1, self._epoch_update(epochs))
+        newcost = self.get_cost()
+        compounds = list(self.get_compounds())
+        _logger.info("Compounds in training data: %s types / %s tokens" %
+                     (len(compounds), self.cost.compound_tokens()))
+
+        if algorithm == 'flatten':
+            _logger.info("Flattening analysis tree")
+            for compound in _progress(compounds):
+                parts = self._get_stored_analysis(compound)
+                self._clear_compound_analysis(compound)
+                self._set_compound_analysis(compound, parts)
+            _logger.info("Done.")
+            return 1, self.get_cost()
+
+        _logger.info("Starting batch training")
+        _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
+
+        while True:
+            # One epoch
+            random.shuffle(compounds)
+
+            for w in _progress(compounds):
+                if algorithm == 'recursive':
+                    segments = self._recursive_optimize(w, *algorithm_params)
+                elif algorithm == 'viterbi':
+                    segments = self._viterbi_optimize(w, *algorithm_params)
+                else:
+                    raise MorfessorException("unknown algorithm '%s'" %
+                                             algorithm)
+                _logger.debug("#%s -> %s" %
+                              (w, " + ".join(self.cc.to_string(s) for s in segments)))
+            epochs += 1
+
+            _logger.debug("Cost before epoch update: %s" % self.get_cost())
+            forced_epochs = max(forced_epochs, self._epoch_update(epochs))
+            oldcost = newcost
+            newcost = self.get_cost()
+            lc, cc = self.cost.cost_before_tuning()
+
+            self._epoch_checks()
+
+            _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
+            _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
+            if (forced_epochs == 0 and
+                    newcost >= oldcost - finish_threshold *
+                    self.cost.compound_tokens()):
+                break
+            if forced_epochs > 0:
+                forced_epochs -= 1
+            if max_epochs is not None and epochs >= max_epochs:
+                _logger.info("Max number of epochs reached, stop training")
+                break
+        _logger.info("Done.")
+        return epochs, newcost
+
+    def train_online(self, data, count_modifier=None, epoch_interval=10000,
+                     algorithm='recursive', algorithm_params=(),
+                     init_rand_split=None, max_epochs=None):
+        """Train the model in online fashion.
+
+        The model is trained with the data provided in the data argument.
+        As example the data could come from a generator linked to standard in
+        for live monitoring of the splitting.
+
+        All compounds from data are only optimized once. After online
+        training, batch training could be used for further optimization.
+
+        Epochs are defined as a fixed number of compounds. After each epoch (
+        like in batch training), the annotation cost, and random split counters
+        are recalculated if applicable.
+
+        Arguments:
+            data: iterator of (_, compound_atoms) tuples. The first
+                    argument is ignored, as every occurence of the
+                    compound is taken with count 1
+            count_modifier: function for adjusting the counts of each
+                              compound
+            epoch_interval: number of compounds to process before starting
+                              a new epoch
+            algorithm: string in ('recursive', 'viterbi') that indicates
+                         the splitting algorithm used.
+            algorithm_params: parameters passed to the splitting algorithm.
+            init_rand_split: probability for random splitting a compound to
+                               at any point for initializing the model. None
+                               or 0 means no random splitting.
+            max_epochs: maximum number of epochs to train
+
+        """
+        self._ensure_baseline()
+        if count_modifier is not None:
+            counts = {}
+
+        _logger.info("Starting online training")
+
+        epochs = 0
+        i = 0
+        more_tokens = True
+        while more_tokens:
+            self._epoch_update(epochs)
+            newcost = self.get_cost()
+            _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
+
+            for _ in _progress(range(epoch_interval)):
+                try:
+                    dp = next(data)
+                except StopIteration:
+                    more_tokens = False
+                    break
+
+                self._add_compound(dp.compound, dp.count)
+                self._clear_compound_analysis(dp.compound)
+                self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+
+                if algorithm == 'recursive':
+                    segments = self._recursive_optimize(dp.compound, *algorithm_params)
+                elif algorithm == 'viterbi':
+                    segments = self._viterbi_optimize(dp.compound, *algorithm_params)
+                else:
+                    raise MorfessorException("unknown algorithm '%s'" %
+                                             algorithm)
+                _logger.debug("#%s: %s -> %s" %
+                              (i, dp.compound, " + ".join(self.cc.to_string(s) for s in segments)))
+                i += 1
+
+            epochs += 1
+            if max_epochs is not None and epochs >= max_epochs:
+                _logger.info("Max number of epochs reached, stop training")
+                break
+
+        self._epoch_update(epochs)
+        newcost = self.get_cost()
+        _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
+        return epochs, newcost
+
+    def _viterbi_optimize(self, compound: str, addcount: int=0, maxlen: int=30):
+        """Optimize segmentation of the compound using the Viterbi algorithm.
+
+        Arguments:
+          compound: compound to optimize
+          addcount: constant for additive smoothing of Viterbi probs
+          maxlen: maximum length for a construction
+
+        Returns list of segments.
+
+        """
+        self._ensure_baseline()
+        if self._skip_frequent_reanalysis and self._do_skip_analysis(compound):
+            return self._get_stored_analysis(compound)
+
+        # Use Viterbi algorithm to optimize the subsegments
+        constructions = []
+        for part in self.cc.splitn(compound, self.cc.force_split_locations(compound)):
+            constructions.extend(self.viterbi_segment(part, addcount=addcount, maxlen=maxlen)[0])
+        self._set_compound_analysis(compound, constructions)
+        return constructions
+
+    def _recursive_optimize(self, compound: str):
+        """Optimize segmentation of the compound using recursive splitting.
+
+        Returns list of segments.
+
+        """
+        self._ensure_baseline()
+        # if self._use_skips and self._test_skip(compound):
+        #     return self.segment(compound)
+        # Collect forced subsegments
+
+        parts = list(self.cc.splitn(compound, self.cc.force_split_locations(compound)))
+        if len(parts) == 1:
+            # just one part
+            return self._recursive_split(compound)
+        self._set_compound_analysis(compound, parts)
+        # Use recursive algorithm to optimize the subsegments
+        constructions = []
+        for part in parts:
+            constructions += self._recursive_split(part)
+        return constructions
+
+    def _set_compound_analysis(self, compound: str, parts):
+        """Set analysis of compound to according to given segmentation.
+
+        Arguments:
+            compound: compound to split
+            parts: desired constructions of the compound
+
+        """
+        self._ensure_baseline()
+        parts = list(parts)
+        if len(parts) == 1:
+            rcount, count = self._remove(compound)
+            self._tree[compound] = ConstructionNode(rcount, 0, tuple())
+            self._modify_construction_count(compound, count)
+        else:
+            rcount, count = self._remove(compound)
+
+            splitloc = tuple(self.cc.parts_to_splitlocs(parts))
+            self._tree[compound] = ConstructionNode(rcount, count, splitloc)
+            for constr in parts:
+                self._modify_construction_count(constr, count)
+
+    def get_segmentations(self):
+        """Retrieve segmentations for all compounds encoded by the model."""
+        self._ensure_baseline()
+        for w in sorted(self._tree.keys()):
+            c = self._tree[w].rcount
+            if c > 0:
+                yield c, w, self._get_stored_analysis(w)

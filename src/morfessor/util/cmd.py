@@ -13,7 +13,7 @@ from .. import get_version
 from . import utils
 from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
-from ..models.baseline import BaselineModel
+from ..models.baseline import _CommonMorfessorBase
 from .constructions.base import BaseConstructionMethods
 from .exception import ArgumentException
 from .io import MorfessorIO
@@ -464,7 +464,7 @@ def main(args):
         model = io.read_binary_model_file(args.loadfile)
 
     else:
-        modelclass = BaselineModel if args.restannofile is None \
+        modelclass = _CommonMorfessorBase if args.restannofile is None \
             else RestrictedBaseline
         model = modelclass(
             corpusweight=args.corpusweight,
@@ -485,7 +485,7 @@ def main(args):
     if args.annofile is not None:
         annotations = io.read_annotations_file(args.annofile,
                                                analysis_sep=analysis_sep)
-        model.set_annotations(annotations, args.annotationweight)
+        model.load_annotations(annotations, args.annotationweight)
 
     if args.restannofile is not None:
         annotations = io.read_annotations_file(args.restannofile,

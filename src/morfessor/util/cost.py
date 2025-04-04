@@ -40,13 +40,11 @@ class Cost(object):
 
         self._corpus_weight_updater.update(self, 0)
 
-    def set_corpus_coding_weight(self, weight):
+    def set_corpus_coding_weight(self, weight: float):
         self._corpus_coding.weight = weight
 
-    def set_annot_coding_weight(self, weight):
-        if self._annot_coding is None:
-            self._annot_coding = AnnotatedCorpusEncoding(
-                self._corpus_coding, weight)
+    def set_annot_coding_weight(self, weight: float):
+        self._annot_coding = self._annot_coding or AnnotatedCorpusEncoding(self._corpus_coding, weight)
 
     def set_annot_constructions(self, constructions):
         self._annot_coding.set_constructions(constructions)

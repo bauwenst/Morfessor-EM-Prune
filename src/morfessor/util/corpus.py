@@ -443,7 +443,7 @@ class AlignedTokenCountCorpusWeight(CorpusWeight):
     def _cached_seg(self, model, cache, word):
         if word not in cache:
             try:
-                seg = model.segment(word)
+                seg = model._get_stored_analysis(word)
             except (KeyError, AttributeError):
                 # don't use viterbi_segment: the only unseen words should be
                 # unanalyzable words, which are not split anyhow
@@ -558,7 +558,7 @@ class MorphLengthCorpusWeight(CorpusWeight):
         total_constructions = 0
         total_atoms = 0
         for compound in model.get_compounds():
-            constructions = model.segment(compound)
+            constructions = model._get_stored_analysis(compound)
             for construction in constructions:
                 total_constructions += 1
                 total_atoms += len(construction)

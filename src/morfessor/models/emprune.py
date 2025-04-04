@@ -7,7 +7,7 @@ import logging
 from copy import deepcopy
 from scipy.special import digamma
 
-from .baseline import BaselineModel, ConstructionNode, DataPoint
+from .baseline import _CommonMorfessorBase, ConstructionNode, DataPoint
 from ..util.cost import FrequencyDistributionMode, EmCost
 from ..util.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha, AutotunePruningCriterion
 
@@ -20,7 +20,7 @@ class LateenMode(Enum):
     PRUNE = 3
 
 
-class MorfessorEMPrune(BaselineModel):
+class MorfessorEMPrune(_CommonMorfessorBase):
     def __init__(self,
                  corpusweight, use_skips, force_splits, nosplit_re,
                  em_substr=None,
