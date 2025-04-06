@@ -13,7 +13,8 @@ from .. import get_version
 from . import utils
 from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
-from ..models.baseline import _CommonMorfessorBase
+from ..models.baseline import MorfessorBaseline
+from ..models.emprune import MorfessorEMPrune
 from .constructions.base import BaseConstructionMethods
 from .exception import ArgumentException
 from .io import MorfessorIO
@@ -459,19 +460,25 @@ def main(args):
     else:
         em_substr = None
 
-    # Load exisiting model or create a new one
+    # Load existing model or create a new one
     if args.loadfile is not None:
         model = io.read_binary_model_file(args.loadfile)
-
-    else:
-        modelclass = _CommonMorfessorBase if args.restannofile is None \
-            else RestrictedBaseline
-        model = modelclass(
+    elif args.em_prune is None:
+        # modelclass = MorfessorBaseline if args.restannofile is None else RestrictedBaseline
+        model = MorfessorBaseline(
             corpusweight=args.corpusweight,
-            use_skips=args.skips,
-            constr_class=constr_class,
-            use_em=args.em_prune is not None,
-            em_substr=em_substr,
+            skip_frequent_reanalysis=args.skips,
+            force_splits=args.forcesplit,
+            nosplit_re=args.nosplit
+        )
+    else:
+        model = MorfessorEMPrune(
+            corpusweight=args.corpusweight,
+            skip_frequent_reanalysis=args.skips,
+            force_splits=args.forcesplit,
+            nosplit_re=args.nosplit,
+
+            em_substr=args.em_prune,
             nolexcost=args.nolexcost,
             freq_distr=args.freq_distr,
         )

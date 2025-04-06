@@ -25,6 +25,7 @@ def merge_counts(data):
     for v in sorted(store.values()):
         yield v
 
+
 def freq_threshold(data, threshold: float, online=False):
     if online:
         counts = Counter()
@@ -34,7 +35,6 @@ def freq_threshold(data, threshold: float, online=False):
 
             if counts[dp.compound] >= threshold:
                 yield dp._replace(count=dp.count-yielded)
-
     else:
         for dp in data:
             if dp.count >= threshold:

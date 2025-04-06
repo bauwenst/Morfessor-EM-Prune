@@ -22,7 +22,7 @@ class LateenMode(Enum):
 
 class MorfessorEMPrune(_CommonMorfessorBase):
     def __init__(self,
-                 corpusweight, use_skips, force_splits, nosplit_re,
+                 corpusweight, skip_frequent_reanalysis, constr_methods,
                  em_substr=None,
                  nolexcost: bool=False,
                  freq_distr: FrequencyDistributionMode=FrequencyDistributionMode.BASELINE):
@@ -31,7 +31,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
         :param em_substr: substring lexicon
         :param freq_distr: ?
         """
-        super().__init__(corpusweight, use_skips, force_splits, nosplit_re)
+        super().__init__(corpusweight=corpusweight, skip_frequent_reanalysis=skip_frequent_reanalysis, constr_methods=constr_methods)
 
         self.cost = EmCost(self.cc, corpusweight, nolexcost, freq_distr)
         self.cost.load_lexicon(em_substr)
@@ -80,7 +80,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
         self.cost.reset()
         if lateen == LateenMode.PRUNE:
             em_params = deepcopy(self.cost)
-            _logger.info('Lateen Prune: using Viterbi counts for pruning')
+            _logger.info("Lateen Prune: using Viterbi counts for pruning")
             expected, cost = self.e_step_hard(maxlen=maxlen)
             self.m_step(expected, expected_freq_threshold=expected_freq_threshold)
 
@@ -91,7 +91,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
             if isinstance(prune_criterion, AutotunePruningCriterion):
                 self.set_corpus_coding_weight(prune_criterion.optimal_alpha)
 
-            _logger.info('Lateen Prune: restoring soft EM counts')
+            _logger.info("Lateen Prune: restoring soft EM counts")
             del self.cost  # TODO [Bauwens]: What is the point of the criterion setting alpha in self.cost above, if you're going to replace it by an earlier deepcopy?
             self.cost = em_params
         else:
@@ -160,7 +160,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
             for sub_epoch in range(sub_epochs):
                 # E-step
                 if lateen == LateenMode.FULL and sub_epoch == sub_epochs - 1:
-                    _logger.info('Lateen EM: using Viterbi e-step')
+                    _logger.info("Lateen EM: using Viterbi e-step")
                     expected, cost = self.e_step_hard(maxlen=maxlen)
                 else:
                     expected, cost = self.e_step(maxlen=maxlen)
@@ -186,7 +186,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
                 (cost, self.cost.types(), self.cost.all_tokens()))
             _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
             if done:
-                _logger.info('Reached pruning goal')
+                _logger.info("Reached pruning goal")
         return epoch, self.get_cost()
 
     def _getViterbiBoundaryCost(self) -> float:
@@ -198,6 +198,3 @@ class MorfessorEMPrune(_CommonMorfessorBase):
 
     def _load_compound(self, dp: DataPoint):
         self._add_compound(dp.compound, dp.count)
-
-    def _ensure_baseline(self):
-        raise Exception("Tokeniser is not Morfessor Baseline.")

@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+"""
+For training with a dataset that has both graphemes and phonemes jointly.
+"""
 
 from __future__ import print_function
 import io
@@ -7,9 +10,10 @@ import sys
 import logging
 
 import morfessor
-from morfessor import BaselineModel
-from morfessor import ParallelConstructionMethods
-from morfessor.util import DataPoint
+from morfessor import MorfessorBaseline
+from morfessor.util.constructions.parallel import ParallelConstructionMethods, ParallelConstruction
+from morfessor.util.data import DataPoint
+
 
 def main(argv):
     alpha = float(argv[0])
@@ -18,21 +22,24 @@ def main(argv):
         parts = line.strip().split()
         graphemes = parts[0]
         phonemes = tuple(parts[1:])
-        compound = ParallelConstructionMethods.type(graphemes, phonemes)
+        compound = ParallelConstruction(graphemes, phonemes)
         data.append(DataPoint(count=1, compound=compound, splitlocs=()))
 
-    model = BaselineModel(corpusweight=alpha, constr_class=ParallelConstructionMethods)
+    methods = ParallelConstructionMethods()
+    model = MorfessorBaseline(corpusweight=alpha, constr_methods=methods)
     model.load_data(data)
     model.train_batch()
 
     with io.open(argv[2], 'w', encoding='utf-8') as outf:
         for c,_,w in model.get_segmentations():
-            print("{} {}".format(c, " + ".join(ParallelConstructionMethods.to_string(w1) for w1 in w)), file=outf)
+            print("{} {}".format(c, " + ".join(methods.to_string(w1) for w1 in w)), file=outf)
+
 
 class opts(dict):
     log_file = None
     verbose = 1
     progress = True
+
 
 if __name__ == "__main__":
     o = opts()

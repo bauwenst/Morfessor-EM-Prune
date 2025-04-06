@@ -2,7 +2,8 @@
 import collections
 import sys
 
-from morfessor.util import SortedCounter
+from morfessor.util.utils import SortedCounter
+
 
 def substrs(seq, min_len=1, max_len=None, prefixes=None):
     prefix_len = min_len - 1
@@ -17,6 +18,7 @@ def substrs(seq, min_len=1, max_len=None, prefixes=None):
         for j in range(min(n_lens, len_seq - start - prefix_len)):
             end = start + j + prefix_len + 1
             yield seq[start:end]
+
 
 class FrequentSubstrings(object):
     def __init__(self,
@@ -225,6 +227,7 @@ def main():
     combined = freq_substrs.finalize()
     for w, c in combined.most_common():
         print('{} {}'.format(c, w))
+
 
 if __name__ == '__main__':
     main()

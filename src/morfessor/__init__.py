@@ -6,7 +6,7 @@ Morfessor 2.0 - Python implementation of the Morfessor method
 import logging
 
 __all__ = ['MorfessorException', 'ArgumentException', 'MorfessorIO',
-           '_CommonMorfessorBase', 'main', 'get_default_argparser', 'main_evaluation',
+           'MorfessorBaseline', 'MorfessorEMPrune', 'main', 'get_default_argparser', 'main_evaluation',
            'get_evaluation_argparser']
 
 __version__ = '2.0.7'

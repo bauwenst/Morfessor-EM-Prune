@@ -1,4 +1,6 @@
 from __future__ import unicode_literals
+
+from abc import abstractmethod
 from typing import Iterable, List, Dict, Union, Tuple
 from collections import Counter
 from dataclasses import dataclass
@@ -11,7 +13,7 @@ import numbers
 import random
 
 from ..util.cost import Cost
-from ..util.constructions.base import BaseConstructionMethods
+from ..util.constructions.base import _ConstructionMethods, BaseConstructionMethods
 from ..util.corpus import FixedCorpusWeight
 from ..util.utils import _progress, tail, logsumexp, categorical
 from ..util.exception import MorfessorException, SegmentOnlyModelException
@@ -36,35 +38,35 @@ class SimpleConstrNode:
 
 class _CommonMorfessorBase:
     """
-    Morfessor Baseline model class.
+    Methods needed by all Morfessor tokenisers.
 
-    Implements training of and segmenting with a Morfessor model. The model
-    is complete agnostic to whether it is used with lists of strings (finding
+    The model is complete agnostic to whether it is used with lists of strings (finding
     phrases in sentences) or strings of characters (finding morphs in words).
     """
 
     penalty = -9999.9
 
-    def __init__(self,
-                 corpusweight=None,
-                 skip_frequent_reanalysis: bool=False,
-                 force_splits=None,
-                 nosplit_re=None):
+    def __init__(
+        self,
+        corpusweight=None,
+        skip_frequent_reanalysis: bool=False,
+        constr_methods: _ConstructionMethods=BaseConstructionMethods(None,None)
+    ):
         """Initialize a new model instance.
 
         Arguments:
-            forcesplit_list: force segmentations on the characters in the given list
-            corpusweight: weight for the corpus cost
-            skip_frequent_reanalysis: randomly skip frequently occurring constructions to speed up training.
+        :param corpusweight: weight for the corpus cost
+        :param skip_frequent_reanalysis: randomly skip frequently occurring constructions to speed up training.
                 According to the Morfessor 2.0 paper:
                 >    As frequent compounds are encountered many times in
                 >    running text, Morfessor 2.0 includes an option for
                 >    randomly skipping compounds and constructions
                 >    that have been recently analyzed.
-            nosplit_re: regular expression string for preventing splitting in certain contexts
+        :param constr_methods: Object that knows how to handle your particular construction type. For example,
+                               you could just have strings and then splitting them is easy. But you could also
+                               have string tuples as constructions, and that requires special splitting methods.
         """
-
-        self.cc = BaseConstructionMethods(force_splits=force_splits, nosplit_re=nosplit_re)
+        self.cc = constr_methods
 
         # For each construction a ConstrNode is stored.
         #  - All training data has a rcount (real count) > 0.
@@ -73,7 +75,7 @@ class _CommonMorfessorBase:
 
         # Flag to indicate the mode in which the model is operating
         self._segment_only = False
-        self._skip_frequent_reanalysis = True
+        self._skip_frequent_reanalysis = skip_frequent_reanalysis
 
         # Flag to indicate whether semi-supervised training is used
         self._supervised = False
@@ -107,19 +109,16 @@ class _CommonMorfessorBase:
         """Return the number of construction types."""
         return self.cost.types() - 1  # do not include boundary
 
-    def _ensure_not_restricted(self):
+    def _assert_not_restricted(self):
         if self._segment_only:
             raise SegmentOnlyModelException()
-
-    def _ensure_baseline(self):  # Raise error only if you are a subclass.
-        pass
 
     def _epoch_checks(self):
         """Apply per epoch checks"""
         # self._check_integrity()
         pass
 
-    def _epoch_update(self, epoch_num):
+    def _epoch_update(self, epoch_num: int):
         """Do model updates that are necessary between training epochs.
 
         The argument is the number of training epochs finished.
@@ -153,7 +152,6 @@ class _CommonMorfessorBase:
 
         For semi-supervised models, select the most likely alternative
         analyses included in the annotations of the compounds.
-
         """
         if not self._supervised:
             return
@@ -292,13 +290,13 @@ class _CommonMorfessorBase:
 
     def get_compounds(self):
         """Return the compound types stored by the model."""
-        self._ensure_not_restricted()
+        self._assert_not_restricted()
         return [w for w, node in self._tree.items()
                 if node.rcount > 0]
 
     def get_compound_counts(self):
         """Return the compound types stored by the model."""
-        self._ensure_not_restricted()
+        self._assert_not_restricted()
         return [(w, node.rcount) for (w, node) in self._tree.items()
                 if node.rcount > 0]
 
@@ -312,7 +310,7 @@ class _CommonMorfessorBase:
         return self.cost.cost()
 
     def get_pseudomodel(self, viterbismooth, viterbimaxlen):
-        self._ensure_not_restricted()
+        self._assert_not_restricted()
         for w in sorted(self._tree.keys()):
             node = self._tree[w]
             if node.rcount == 0:
@@ -738,7 +736,7 @@ class _CommonMorfessorBase:
         return self.cost._corpus_coding.weight
 
     def set_corpus_coding_weight(self, weight: float):
-        self._ensure_not_restricted()
+        self._assert_not_restricted()
         self.cost.set_corpus_coding_weight(weight)
 
     def get_params(self):
@@ -752,7 +750,70 @@ class _CommonMorfessorBase:
         return params
 
 
+class MorfessorBaselineSegmenter:
+    @abstractmethod
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
+        pass
+
+
+class ViterbiSegmenter(MorfessorBaselineSegmenter):
+
+    def __init__(self, addcount: int=0, maxlen: int=30):
+        """
+        Optimize segmentation of the compound using the Viterbi algorithm.
+
+        Arguments:
+            compound: compound to optimize
+            addcount: constant for additive smoothing of Viterbi probs
+            maxlen: maximum length for a construction
+        """
+        self._addcount = addcount
+        self._maxlen = maxlen
+
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
+        if model._skip_frequent_reanalysis and model._do_skip_analysis(compound):
+            return model._get_stored_analysis(compound)
+
+        # Use Viterbi algorithm to optimize the subsegments
+        constructions = []
+        for part in model.cc.splitn(compound, model.cc.force_split_locations(compound)):
+            constructions.extend(model.viterbi_segment(part, addcount=self._addcount, maxlen=self._maxlen)[0])
+        model._set_compound_analysis(compound, constructions)
+        return constructions
+
+
+class RecursiveSegmenter(MorfessorBaselineSegmenter):
+    """
+    Optimize segmentation of the compound using recursive splitting.
+    """
+
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:  # TODO: Possibly you want to put this _recursive_split into this class.
+        # if self._use_skips and self._test_skip(compound):
+        #     return self.segment(compound)
+        # Collect forced subsegments
+
+        parts = list(model.cc.splitn(compound, model.cc.force_split_locations(compound)))
+        if len(parts) == 1:
+            return model._recursive_split(compound)
+
+        model._set_compound_analysis(compound, parts)
+        # Use recursive algorithm to optimize the subsegments
+        constructions = []
+        for part in parts:
+            constructions += model._recursive_split(part)
+        return constructions
+
+
+class FlatteningSegmenter(MorfessorBaselineSegmenter):
+
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
+        return model._get_stored_analysis(compound)
+
+
 class MorfessorBaseline(_CommonMorfessorBase):
+    """
+    Extends the Morfessor base with all methods needed to train Morfessor Baseline.
+    """
 
     def load_data(self, data: Iterable[DataPoint]):
         """Load data to initialize the model for batch training.
@@ -764,7 +825,7 @@ class MorfessorBaseline(_CommonMorfessorBase):
         the total cost.
 
         """
-        self._ensure_not_restricted()
+        self._assert_not_restricted()
         for dp in data:
             self._load_compound(dp)
         return self.get_cost()
@@ -777,7 +838,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
 
     # FIXME [Grönroos]: refactor?
     def load_segmentations(self, segmentations: Iterable[Tuple[int,str,List[str]]]):
-        self._ensure_baseline()
         for count, compound, constructions in segmentations:
             splitlocs = tuple(self.cc.parts_to_splitlocs(constructions))
             self._add_compound(compound, count)
@@ -792,7 +852,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
         doing so would throw an exception.
 
         """
-        self._ensure_baseline()
         #self._num_compounds = len(self.get_compounds())
         self._segment_only = True
 
@@ -801,13 +860,11 @@ class MorfessorBaseline(_CommonMorfessorBase):
 
     def _remove(self, construction: str):
         """Remove construction from model."""
-        self._ensure_baseline()
         rcount, count, splitloc = self._tree[construction]
         self._modify_construction_count(construction, -count)
         return rcount, count
 
     def clear_segmentation(self):
-        self._ensure_baseline()
         for compound in self.get_compounds():
             self._clear_compound_analysis(compound)
             self._set_compound_analysis(compound, [compound])
@@ -819,7 +876,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
         data. For segmenting new words, use viterbi_segment(compound).
 
         """
-        self._ensure_baseline()
         _, _, splitloc = self._tree[compound]
         constructions = []
         if splitloc:
@@ -830,7 +886,7 @@ class MorfessorBaseline(_CommonMorfessorBase):
 
         return constructions
 
-    def train_batch(self, algorithm='recursive', algorithm_params=(),
+    def train_batch(self, algorithm: MorfessorBaselineSegmenter=RecursiveSegmenter(),
                     finish_threshold=0.005, max_epochs=None):
         """Train the model in batch fashion.
 
@@ -842,50 +898,36 @@ class MorfessorBaseline(_CommonMorfessorBase):
         annotation cost, and random split counters are recalculated after
         each iteration.
 
-        Arguments:
-            algorithm: string in ('recursive', 'viterbi', 'flatten')
-                         that indicates the splitting algorithm used.
-            algorithm_params: parameters passed to the splitting algorithm.
-            finish_threshold: the stopping threshold. Training stops when
-                                the improvement of the last iteration is
-                                smaller then finish_threshold * #boundaries
-            max_epochs: maximum number of epochs to train
-
+        :param algorithm: indicates the splitting algorithm used.
+        :param algorithm_params: parameters passed to the splitting algorithm.
+        :param finish_threshold: the stopping threshold. Training stops when
+                                 the improvement of the last iteration is
+                                 smaller then finish_threshold * #boundaries
+        :param max_epochs: maximum number of epochs to train
         """
-        self._ensure_baseline()
         epochs = 0
         forced_epochs = max(1, self._epoch_update(epochs))
         newcost = self.get_cost()
         compounds = list(self.get_compounds())
-        _logger.info("Compounds in training data: %s types / %s tokens" %
-                     (len(compounds), self.cost.compound_tokens()))
+        _logger.info(f"Compounds in training data: {len(compounds)} types / {self.cost.compound_tokens()} tokens")
 
-        if algorithm == 'flatten':
+        if isinstance(algorithm, FlatteningSegmenter):  # TODO: You can simplify this to the loop below if you put the clear and set into the Segmenter object.
             _logger.info("Flattening analysis tree")
             for compound in _progress(compounds):
-                parts = self._get_stored_analysis(compound)
+                segments = algorithm.segment(self, compound)
                 self._clear_compound_analysis(compound)
-                self._set_compound_analysis(compound, parts)
+                self._set_compound_analysis(compound, segments)
             _logger.info("Done.")
             return 1, self.get_cost()
 
         _logger.info("Starting batch training")
         _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
 
-        while True:
-            # One epoch
+        while True:  # Epoch iterator
             random.shuffle(compounds)
-
             for w in _progress(compounds):
-                if algorithm == 'recursive':
-                    segments = self._recursive_optimize(w, *algorithm_params)
-                elif algorithm == 'viterbi':
-                    segments = self._viterbi_optimize(w, *algorithm_params)
-                else:
-                    raise MorfessorException("unknown algorithm '%s'" %
-                                             algorithm)
-                _logger.debug("#%s -> %s" %
-                              (w, " + ".join(self.cc.to_string(s) for s in segments)))
+                segments = algorithm.segment(self, w)
+                _logger.debug(f"#{w} -> {' + '.join(self.cc.to_string(s) for s in segments)}")
             epochs += 1
 
             _logger.debug("Cost before epoch update: %s" % self.get_cost())
@@ -910,9 +952,9 @@ class MorfessorBaseline(_CommonMorfessorBase):
         _logger.info("Done.")
         return epochs, newcost
 
-    def train_online(self, data, count_modifier=None, epoch_interval=10000,
-                     algorithm='recursive', algorithm_params=(),
-                     init_rand_split=None, max_epochs=None):
+    def train_online(self, data: Iterable[DataPoint], count_modifier=None, epoch_interval: int=10000,
+                     algorithm: MorfessorBaselineSegmenter=RecursiveSegmenter(),
+                     init_rand_split=None, max_epochs: int=None):
         """Train the model in online fashion.
 
         The model is trained with the data provided in the data argument.
@@ -927,31 +969,28 @@ class MorfessorBaseline(_CommonMorfessorBase):
         are recalculated if applicable.
 
         Arguments:
-            data: iterator of (_, compound_atoms) tuples. The first
-                    argument is ignored, as every occurence of the
-                    compound is taken with count 1
-            count_modifier: function for adjusting the counts of each
-                              compound
-            epoch_interval: number of compounds to process before starting
-                              a new epoch
-            algorithm: string in ('recursive', 'viterbi') that indicates
-                         the splitting algorithm used.
+            data: iterator of DataPoints. Every occurrence of the compound is taken with count 1
+                    FIXME [Bauwens]: That's not true.
+            count_modifier: function for adjusting the counts of each compound
+            epoch_interval: number of compounds to process before starting a new epoch
+            algorithm: indicates the splitting algorithm used.
             algorithm_params: parameters passed to the splitting algorithm.
             init_rand_split: probability for random splitting a compound to
                                at any point for initializing the model. None
                                or 0 means no random splitting.
             max_epochs: maximum number of epochs to train
-
         """
-        self._ensure_baseline()
+        if isinstance(algorithm, FlatteningSegmenter):
+            raise ValueError("Cannot use flattening during online training.")
         if count_modifier is not None:
             counts = {}
-
-        _logger.info("Starting online training")
 
         epochs = 0
         i = 0
         more_tokens = True
+        data = iter(data)
+
+        _logger.info("Starting online training")
         while more_tokens:
             self._epoch_update(epochs)
             newcost = self.get_cost()
@@ -968,15 +1007,8 @@ class MorfessorBaseline(_CommonMorfessorBase):
                 self._clear_compound_analysis(dp.compound)
                 self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
 
-                if algorithm == 'recursive':
-                    segments = self._recursive_optimize(dp.compound, *algorithm_params)
-                elif algorithm == 'viterbi':
-                    segments = self._viterbi_optimize(dp.compound, *algorithm_params)
-                else:
-                    raise MorfessorException("unknown algorithm '%s'" %
-                                             algorithm)
-                _logger.debug("#%s: %s -> %s" %
-                              (i, dp.compound, " + ".join(self.cc.to_string(s) for s in segments)))
+                segments = algorithm.segment(self, dp.compound)
+                _logger.debug(f"#{i}: {dp.compound} -> {' + '.join(self.cc.to_string(s) for s in segments)}")
                 i += 1
 
             epochs += 1
@@ -989,50 +1021,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
         _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
         return epochs, newcost
 
-    def _viterbi_optimize(self, compound: str, addcount: int=0, maxlen: int=30):
-        """Optimize segmentation of the compound using the Viterbi algorithm.
-
-        Arguments:
-          compound: compound to optimize
-          addcount: constant for additive smoothing of Viterbi probs
-          maxlen: maximum length for a construction
-
-        Returns list of segments.
-
-        """
-        self._ensure_baseline()
-        if self._skip_frequent_reanalysis and self._do_skip_analysis(compound):
-            return self._get_stored_analysis(compound)
-
-        # Use Viterbi algorithm to optimize the subsegments
-        constructions = []
-        for part in self.cc.splitn(compound, self.cc.force_split_locations(compound)):
-            constructions.extend(self.viterbi_segment(part, addcount=addcount, maxlen=maxlen)[0])
-        self._set_compound_analysis(compound, constructions)
-        return constructions
-
-    def _recursive_optimize(self, compound: str):
-        """Optimize segmentation of the compound using recursive splitting.
-
-        Returns list of segments.
-
-        """
-        self._ensure_baseline()
-        # if self._use_skips and self._test_skip(compound):
-        #     return self.segment(compound)
-        # Collect forced subsegments
-
-        parts = list(self.cc.splitn(compound, self.cc.force_split_locations(compound)))
-        if len(parts) == 1:
-            # just one part
-            return self._recursive_split(compound)
-        self._set_compound_analysis(compound, parts)
-        # Use recursive algorithm to optimize the subsegments
-        constructions = []
-        for part in parts:
-            constructions += self._recursive_split(part)
-        return constructions
-
     def _set_compound_analysis(self, compound: str, parts):
         """Set analysis of compound to according to given segmentation.
 
@@ -1041,7 +1029,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
             parts: desired constructions of the compound
 
         """
-        self._ensure_baseline()
         parts = list(parts)
         if len(parts) == 1:
             rcount, count = self._remove(compound)
@@ -1057,7 +1044,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
 
     def get_segmentations(self):
         """Retrieve segmentations for all compounds encoded by the model."""
-        self._ensure_baseline()
         for w in sorted(self._tree.keys()):
             c = self._tree[w].rcount
             if c > 0:

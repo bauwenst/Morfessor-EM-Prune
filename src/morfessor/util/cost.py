@@ -186,7 +186,8 @@ class EmCorpusEncoding(CorpusEncoding):
 
 class EmCost(Cost):
     def __init__(self, contr_class, corpusweight=1.0, nolexcost=False,
-                 freq_distr='baseline'):
+                 freq_distr: FrequencyDistributionMode=FrequencyDistributionMode.BASELINE):
+        super().__init__(contr_class, corpusweight)
         self.cc = contr_class
         # Cost variables
         self._lexicon_coding = EmLexiconEncoding()
