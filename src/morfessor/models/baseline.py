@@ -75,7 +75,9 @@ class _CommonMorfessorBase:
 
         # Flag to indicate the mode in which the model is operating
         self._segment_only = False
+
         self._skip_frequent_reanalysis = skip_frequent_reanalysis
+        self._analysis_counter = Counter()
 
         # Flag to indicate whether semi-supervised training is used
         self._supervised = False
@@ -139,8 +141,7 @@ class _CommonMorfessorBase:
             if self._corpus_weight_updater.update(self, epoch_num):
                 forced_epochs += 2
 
-        # if self._use_skips:
-        #     self._counter = collections.Counter()
+        self._analysis_counter = Counter()
         if self._supervised:
             self._update_annotation_choices()
             self.cost._annot_coding.update_weight()
@@ -206,56 +207,11 @@ class _CommonMorfessorBase:
 
     def _do_skip_analysis(self, construction):
         """Return true if construction should be skipped."""
-        if construction in self._counter:
-            if random.random() > 1.0 / max(1,self._counter[construction]):
+        if construction in self._analysis_counter:
+            if random.random() > 1.0 / max(1,self._analysis_counter[construction]):
                 return True
-        self._counter[construction] += 1
+        self._analysis_counter[construction] += 1
         return False
-
-    def _recursive_split(self, construction: str):
-        """Optimize segmentation of the construction by recursive splitting.
-
-        Returns list of segments.
-
-        """
-        # if self._use_skips and self._test_skip(construction):
-        #     return self.segment(construction)
-        rcount, count = self._remove(construction)
-
-        # Check all binary splits and no split
-        self._modify_construction_count(construction, count)
-        mincost = self.get_cost()
-        self._modify_construction_count(construction, -count)
-
-        best_splitloc = None
-
-        for loc in self.cc.split_locations(construction):
-            prefix, suffix = self.cc.split(construction, loc)
-            self._modify_construction_count(prefix, count)
-            self._modify_construction_count(suffix, count)
-            cost = self.get_cost()
-            self._modify_construction_count(prefix, -count)
-            self._modify_construction_count(suffix, -count)
-            if cost <= mincost:
-                mincost = cost
-                best_splitloc = loc
-
-        if best_splitloc:
-            # Virtual construction
-            self._tree[construction] = ConstructionNode(rcount, count, best_splitloc)
-            prefix, suffix = self.cc.split(construction, best_splitloc)
-            self._modify_construction_count(prefix, count)
-            self._modify_construction_count(suffix, count)
-            lp = self._recursive_split(prefix)
-            if suffix != prefix:
-                return lp + self._recursive_split(suffix)
-            else:
-                return lp + lp
-        else:
-            # Real construction
-            self._tree[construction] = ConstructionNode(rcount, 0, None)
-            self._modify_construction_count(construction, count)
-            return [construction]
 
     def _modify_construction_count(self, construction: str, dcount: int):
         """Modify the count of construction by dcount.
@@ -1048,3 +1004,48 @@ class MorfessorBaseline(_CommonMorfessorBase):
             c = self._tree[w].rcount
             if c > 0:
                 yield c, w, self._get_stored_analysis(w)
+                
+    def _recursive_split(self, construction: str):
+        """Optimize segmentation of the construction by recursive splitting.
+
+        Returns list of segments.
+
+        """
+        # if self._use_skips and self._test_skip(construction):
+        #     return self.segment(construction)
+        rcount, count = self._remove(construction)
+
+        # Check all binary splits and no split
+        self._modify_construction_count(construction, count)
+        mincost = self.get_cost()
+        self._modify_construction_count(construction, -count)
+
+        best_splitloc = None
+
+        for loc in self.cc.split_locations(construction):
+            prefix, suffix = self.cc.split(construction, loc)
+            self._modify_construction_count(prefix, count)
+            self._modify_construction_count(suffix, count)
+            cost = self.get_cost()
+            self._modify_construction_count(prefix, -count)
+            self._modify_construction_count(suffix, -count)
+            if cost <= mincost:
+                mincost = cost
+                best_splitloc = loc
+
+        if best_splitloc:
+            # Virtual construction
+            self._tree[construction] = ConstructionNode(rcount, count, best_splitloc)
+            prefix, suffix = self.cc.split(construction, best_splitloc)
+            self._modify_construction_count(prefix, count)
+            self._modify_construction_count(suffix, count)
+            lp = self._recursive_split(prefix)
+            if suffix != prefix:
+                return lp + self._recursive_split(suffix)
+            else:
+                return lp + lp
+        else:
+            # Real construction
+            self._tree[construction] = ConstructionNode(rcount, 0, None)
+            self._modify_construction_count(construction, count)
+            return [construction]
