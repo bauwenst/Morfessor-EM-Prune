@@ -1,5 +1,3 @@
-from __future__ import unicode_literals
-
 from abc import abstractmethod
 from typing import Iterable, List, Dict, Union, Tuple
 from collections import Counter
@@ -16,7 +14,7 @@ from ..util.cost import Cost
 from ..util.constructions.base import _ConstructionMethods, BaseConstructionMethods
 from ..util.corpus import FixedCorpusWeight
 from ..util.utils import _progress, tail, logsumexp, categorical
-from ..util.exception import MorfessorException, SegmentOnlyModelException
+from ..util.exception import SegmentOnlyModelException
 from ..util.data import DataPoint
 
 _logger = logging.getLogger(__name__)
@@ -695,14 +693,15 @@ class _CommonMorfessorBase:
         self._assert_not_restricted()
         self.cost.set_corpus_coding_weight(weight)
 
-    def get_params(self):
+    def get_params(self) -> dict:
         """Returns a dict of hyperparameters."""
         params = {'corpusweight': self.get_corpus_coding_weight()}
         if self._supervised:
             params['annotationweight'] = self.cost._annot_coding.weight
-        params['forcesplit'] = ''.join(sorted(self.cc._force_splits))
-        if self.cc._nosplit:
-            params['nosplit'] = self.cc._nosplit.pattern
+        if isinstance(self.cc, BaseConstructionMethods):
+            params['forcesplit'] = ''.join(sorted(self.cc._force_splits))
+            if self.cc._nosplit:
+                params['nosplit'] = self.cc._nosplit.pattern
         return params
 
 
@@ -769,6 +768,10 @@ class FlatteningSegmenter(MorfessorBaselineSegmenter):
 class MorfessorBaseline(_CommonMorfessorBase):
     """
     Extends the Morfessor base with all methods needed to train Morfessor Baseline.
+
+    Originally, these methods were in the parent class, and prefixed with an assertion that disallowed usage by
+    all other subclasses except Morfessor Baseline. This assertion has been removed below, but that does not mean
+    that they can be moved back to the parent class.
     """
 
     def load_data(self, data: Iterable[DataPoint]):
@@ -1004,7 +1007,7 @@ class MorfessorBaseline(_CommonMorfessorBase):
             c = self._tree[w].rcount
             if c > 0:
                 yield c, w, self._get_stored_analysis(w)
-                
+
     def _recursive_split(self, construction: str):
         """Optimize segmentation of the construction by recursive splitting.
 
