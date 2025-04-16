@@ -1,0 +1,411 @@
+from abc import ABC, abstractmethod
+from typing import List, Iterable, Tuple
+from collections import Counter
+
+import random
+import logging
+
+from ._common import _CommonMorfessorBase, ConstructionNode, DataPoint
+from ..util.utils import _progress
+
+_logger = logging.getLogger(__name__)
+
+
+class MorfessorBaselineSegmenter(ABC):
+    @abstractmethod
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
+        pass
+
+
+class ViterbiSegmenter(MorfessorBaselineSegmenter):
+
+    def __init__(self, addcount: int=0, maxlen: int=30):
+        """
+        Optimize segmentation of the compound using the Viterbi algorithm.
+
+        Arguments:
+            addcount: constant for additive smoothing of Viterbi probs
+            maxlen: maximum length for a construction
+        """
+        self._addcount = addcount
+        self._maxlen = maxlen
+
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
+        if model._skip_frequent_reanalysis and model._do_skip_analysis(compound):
+            return model._get_stored_analysis(compound)
+
+        # Use Viterbi algorithm to optimize the subsegments
+        constructions = []
+        for part in model.cc.splitn(compound, model.cc.force_split_locations(compound)):
+            constructions.extend(model.viterbi_segment(part, addcount=self._addcount, maxlen=self._maxlen)[0])
+        model._set_compound_analysis(compound, constructions)
+        return constructions
+
+
+class RecursiveSegmenter(MorfessorBaselineSegmenter):
+    """
+    Optimize segmentation of the compound using recursive splitting.
+    """
+
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:  # TODO: Possibly you want to put this _recursive_split into this class.
+        # if self._use_skips and self._test_skip(compound):
+        #     return self.segment(compound)
+        # Collect forced subsegments
+
+        parts = list(model.cc.splitn(compound, model.cc.force_split_locations(compound)))
+        if len(parts) == 1:
+            return model._recursive_split(compound)
+
+        model._set_compound_analysis(compound, parts)
+        # Use recursive algorithm to optimize the subsegments
+        constructions = []
+        for part in parts:
+            constructions += model._recursive_split(part)
+        return constructions
+
+
+class FlatteningSegmenter(MorfessorBaselineSegmenter):
+
+    def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
+        segments = model._get_stored_analysis(compound)
+        model._clear_compound_analysis(compound)
+        model._set_compound_analysis(compound, segments)
+        return segments
+
+
+class MorfessorBaseline(_CommonMorfessorBase):
+    """
+    Extends the Morfessor base with all methods needed to train Morfessor Baseline.
+
+    Originally, these methods were in the parent class, and prefixed with an assertion that disallowed usage by
+    all other subclasses except Morfessor Baseline. This assertion has been removed below, but that does not mean
+    that they can be moved back to the parent class.
+    """
+
+    # FIXME [Grönroos]: refactor?
+    def load_segmentations(self, segmentations: Iterable[Tuple[int,str,List[str]]]):
+        for count, compound, constructions in segmentations:
+            splitlocs = tuple(self.cc.parts_to_splitlocs(constructions))
+            self._add_compound(compound, count)
+            self._clear_compound_analysis(compound)
+            self._set_compound_analysis(compound, self.cc.splitn(compound, splitlocs))
+        return self.get_cost()
+
+    def _add_compound(self, compound: str, c: int):
+        self.cost.update_boundaries(compound, c)
+        self._modify_construction_count(compound, c)
+        self._tree[compound].rcount += c
+
+    def _load_compound(self, dp: DataPoint):
+        self._add_compound(dp.compound, dp.count)
+
+        self._clear_compound_analysis(dp.compound)
+        self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+
+    def make_segment_only(self):
+        """Reduce the size of this model by removing all non-morphs from the
+        analyses. After calling this method it is not possible anymore to call
+        any other method that would change the state of the model. Anyway
+        doing so would throw an exception.
+
+        """
+        #self._num_compounds = len(self.get_compounds())
+        self._segment_only = True
+
+        self._tree = {k: v for (k, v) in self._tree.items()
+                      if not v.splitloc}
+
+    def _remove(self, construction: str) -> Tuple[int,int]:
+        """Remove construction from model."""
+        node = self._tree[construction]
+        rcount, count = node.rcount, node.count
+        self._modify_construction_count(construction, -count)
+        return rcount, count
+
+    def clear_segmentations(self):
+        for compound in self.get_compounds():
+            self._clear_compound_analysis(compound)
+            self._set_compound_analysis(compound, [compound])
+
+    def _get_stored_analysis(self, compound: str) -> List[str]:
+        """Segment the compound by looking it up in the model analyses.
+
+        Raises KeyError if compound is not present in the training
+        data. For segmenting new words, use viterbi_segment(compound).
+        """
+        _, _, splitloc = self._tree[compound]
+        constructions = []
+        if splitloc:
+            for part in self.cc.splitn(compound, splitloc):
+                constructions += self._get_stored_analysis(part)
+        else:
+            constructions.append(compound)
+
+        return constructions
+
+    def train_batch(self, algorithm: MorfessorBaselineSegmenter=RecursiveSegmenter(),
+                    finish_threshold=0.005, max_epochs=None):
+        """Train the model in batch fashion.
+
+        The model is trained with the data already loaded into the model (by
+        using an existing model or calling one of the load_... methods).
+
+        In each iteration (epoch) all compounds in the training data are
+        optimized once, in a random order. If applicable, corpus weight,
+        annotation cost, and random split counters are recalculated after
+        each iteration.
+
+        :param algorithm: the splitting algorithm used.
+        :param finish_threshold: the stopping threshold. Training stops when
+                                 the improvement of the last iteration is
+                                 smaller then finish_threshold * #boundaries
+        :param max_epochs: maximum number of epochs to train
+        """
+        epochs = 0
+        min_epochs = max(1, self._epoch_update(epochs))
+        newcost = self.get_cost()
+        compounds = list(self.get_compounds())
+        _logger.info(f"Compounds in training data: {len(compounds)} types / {self.cost.compound_tokens()} tokens")
+        _logger.info("Starting batch training")
+        _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
+
+        while True:  # Epoch iterator
+            random.shuffle(compounds)
+            for w in _progress(compounds):
+                segments = algorithm.segment(self, w)
+                _logger.debug(f"#{w} -> {' + '.join(self.cc.to_string(s) for s in segments)}")
+            epochs += 1
+
+            if isinstance(algorithm, FlatteningSegmenter):
+                _logger.info("Flattened analysis tree.")
+                return epochs, self.get_cost()
+
+            _logger.debug("Cost before epoch update: %s" % self.get_cost())
+            min_epochs = max(min_epochs, self._epoch_update(epochs))
+            oldcost = newcost
+            newcost = self.get_cost()
+            lc, cc = self.cost.cost_before_tuning()
+
+            self._epoch_checks()
+
+            _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
+            _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
+
+            # Handle minimal and maximal epochs.
+            if min_epochs <= 0:
+                if newcost >= oldcost - finish_threshold*self.cost.compound_tokens():
+                    break
+            else:
+                min_epochs -= 1
+
+            if max_epochs is not None:
+                if epochs >= max_epochs:
+                    _logger.info("Max number of epochs reached, stop training")
+                    break
+
+        _logger.info("Done.")
+        return epochs, newcost
+
+    def train_online(self, data: Iterable[DataPoint], count_modifier=None, epoch_interval: int=10000,
+                     algorithm: MorfessorBaselineSegmenter=RecursiveSegmenter(),
+                     init_rand_split=None, max_epochs: int=None):
+        """Train the model in online fashion.
+
+        The model is trained with the data provided in the data argument.
+        As example the data could come from a generator linked to standard in
+        for live monitoring of the splitting.
+
+        All compounds from data are only optimized once. After online
+        training, batch training could be used for further optimization.
+
+        Epochs are defined as a fixed number of compounds. After each epoch (
+        like in batch training), the annotation cost, and random split counters
+        are recalculated if applicable.
+
+        Arguments:
+            data: iterator of DataPoints. Every occurrence of the compound is taken with count 1
+                    FIXME [Bauwens]: That's not true.
+            count_modifier: function for adjusting the counts of each compound
+            epoch_interval: number of compounds to process before starting a new epoch
+            algorithm: the splitting algorithm used.
+            init_rand_split: probability for random splitting a compound to
+                               at any point for initializing the model. None
+                               or 0 means no random splitting.
+            max_epochs: maximum number of epochs to train
+        """
+        if isinstance(algorithm, FlatteningSegmenter):
+            raise ValueError("Cannot use flattening during online training.")
+        if count_modifier is not None:
+            counts = {}
+
+        epochs = 0
+        i = 0
+        more_tokens = True
+        data = iter(data)
+
+        _logger.info("Starting online training")
+        while more_tokens:
+            self._epoch_update(epochs)
+            newcost = self.get_cost()
+            _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
+
+            for _ in _progress(range(epoch_interval)):
+                try:
+                    dp = next(data)
+                except StopIteration:
+                    more_tokens = False
+                    break
+
+                self._add_compound(dp.compound, dp.count)
+                self._clear_compound_analysis(dp.compound)
+                self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+
+                segments = algorithm.segment(self, dp.compound)
+                _logger.debug(f"#{i}: {dp.compound} -> {' + '.join(self.cc.to_string(s) for s in segments)}")
+                i += 1
+
+            epochs += 1
+            if max_epochs is not None and epochs >= max_epochs:
+                _logger.info("Max number of epochs reached, stop training")
+                break
+
+        self._epoch_update(epochs)
+        newcost = self.get_cost()
+        _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
+        return epochs, newcost
+
+    def _epoch_checks(self):
+        """Apply per epoch checks"""
+        # self._check_integrity()  # No longer exists...
+        pass
+
+    def _epoch_update(self, epoch_num: int) -> int:
+        """Do model updates that are necessary between training epochs.
+
+        The argument is the number of training epochs finished.
+
+        In practice, this does two things:
+        - If random skipping is in use, reset construction counters.
+        - If semi-supervised learning is in use and there are alternative
+          analyses in the annotated data, select the annotations that are
+          most likely given the model parameters. If not hand-set, update
+          the weight of the annotated corpus.
+
+        This method should also be run prior to training (with the
+        epoch number argument as 0).
+
+        """
+        forced_epochs = 0
+        if self._corpus_weight_updater is not None:
+            if self._corpus_weight_updater.update(self, epoch_num):
+                forced_epochs += 2
+
+        self._analysis_counter = Counter()
+        if self._is_semisupervised():
+            self._update_annotation_choices()
+            self.cost._annot_coding.update_weight()
+
+        return forced_epochs
+
+    def _set_compound_analysis(self, compound: str, parts):
+        """Set analysis of compound to according to given segmentation.
+
+        Arguments:
+            compound: compound to split
+            parts: desired constructions of the compound
+
+        """
+        parts = list(parts)
+        if len(parts) == 1:
+            rcount, count = self._remove(compound)
+            self._tree[compound] = ConstructionNode(rcount, 0, tuple())
+            self._modify_construction_count(compound, count)
+        else:
+            rcount, count = self._remove(compound)
+
+            splitloc = tuple(self.cc.parts_to_splitlocs(parts))
+            self._tree[compound] = ConstructionNode(rcount, count, splitloc)
+            for constr in parts:
+                self._modify_construction_count(constr, count)
+
+    def _modify_construction_count(self, construction: str, dcount: int):
+        """Modify the count of construction by dcount.
+
+        For virtual constructions, recurses to child nodes in the
+        tree. For real constructions, adds/removes construction
+        to/from the lexicon whenever necessary.
+
+        """
+        if dcount == 0 or construction is None:
+            return
+        if construction in self._tree:
+            node = self._tree[construction]
+            rcount, count, splitloc = node.rcount, node.count, node.splitloc
+        else:
+            rcount, count, splitloc = 0, 0, None
+        newcount = count + dcount
+        # observe that this comparison will not work correctly if counts
+        # are floats rather than ints
+        if newcount == 0:
+            if construction in self._tree:
+                del self._tree[construction]
+        else:
+            self._tree[construction] = ConstructionNode(rcount, newcount, splitloc)
+        if splitloc:
+            # Virtual construction
+            for child in self.cc.splitn(construction, splitloc):
+                self._modify_construction_count(child, dcount)
+        else:
+            self.cost.update(construction, newcount - count)  # Real construction
+
+    def get_segmentations(self):
+        """Retrieve segmentations for all compounds encoded by the model."""
+        for w in sorted(self._tree.keys()):
+            c = self._tree[w].rcount
+            if c > 0:
+                yield c, w, self._get_stored_analysis(w)
+
+    def _recursive_split(self, construction: str):
+        """Optimize segmentation of the construction by recursive splitting.
+
+        Returns list of segments.
+
+        """
+        # if self._use_skips and self._test_skip(construction):
+        #     return self.segment(construction)
+        rcount, count = self._remove(construction)
+
+        # Check all binary splits and no split
+        self._modify_construction_count(construction, count)
+        mincost = self.get_cost()
+        self._modify_construction_count(construction, -count)
+
+        best_splitloc = None
+
+        for loc in self.cc.split_locations(construction):
+            prefix, suffix = self.cc.split(construction, loc)
+            self._modify_construction_count(prefix, count)
+            self._modify_construction_count(suffix, count)
+            cost = self.get_cost()
+            self._modify_construction_count(prefix, -count)
+            self._modify_construction_count(suffix, -count)
+            if cost <= mincost:
+                mincost = cost
+                best_splitloc = loc
+
+        if best_splitloc:
+            # Virtual construction
+            self._tree[construction] = ConstructionNode(rcount, count, best_splitloc)
+            prefix, suffix = self.cc.split(construction, best_splitloc)
+            self._modify_construction_count(prefix, count)
+            self._modify_construction_count(suffix, count)
+            lp = self._recursive_split(prefix)
+            if suffix != prefix:
+                return lp + self._recursive_split(suffix)
+            else:
+                return lp + lp
+        else:
+            # Real construction
+            self._tree[construction] = ConstructionNode(rcount, 0, None)
+            self._modify_construction_count(construction, count)
+            return [construction]
