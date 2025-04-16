@@ -1,4 +1,4 @@
-from abc import abstractmethod
+from abc import abstractmethod, ABC
 from typing import Iterable, List, Dict, Union, Tuple
 from collections import Counter
 from dataclasses import dataclass
@@ -34,7 +34,7 @@ class SimpleConstrNode:
     splitloc: Union[int, Tuple[int,...]]
 
 
-class _CommonMorfessorBase:
+class _CommonMorfessorBase(ABC):
     """
     Methods needed by all Morfessor tokenisers.
 
@@ -77,15 +77,11 @@ class _CommonMorfessorBase:
         self._skip_frequent_reanalysis = skip_frequent_reanalysis
         self._analysis_counter = Counter()
 
-        # Flag to indicate whether semi-supervised training is used
-        self._supervised = False
-        self._annotations: Dict[str,List[List[str]]] = None
+        # Semi-supervised data
+        self._annotations: Dict[str,List[List[str]]] = dict()
 
         # Cost variables
-        # self._lexicon_coding = LexiconEncoding()
-        # self._corpus_coding = CorpusEncoding(self._lexicon_coding)
-        # self._annot_coding = None
-        self.cost = Cost(self.cc, corpusweight)  # Overridden in EM.
+        self.cost = Cost(self.cc, corpusweight)  # This field is overridden in EM.
 
         # Set corpus weight updater
         self._corpus_weight_updater = None
@@ -98,6 +94,21 @@ class _CommonMorfessorBase:
             self._corpus_weight_updater = FixedCorpusWeight(corpus_weight)
         else:
             self._corpus_weight_updater = corpus_weight
+
+    def load_data(self, data: Iterable[DataPoint]):
+        """Load data to initialize the model for batch training.
+
+        Arguments:
+            data: iterator of DataPoint tuples
+
+        Adds the compounds in the corpus to the model lexicon. Returns
+        the total cost.
+
+        """
+        self._assert_not_restricted()
+        for dp in data:
+            self._load_compound(dp)
+        return self.get_cost()
 
     @property
     def tokens(self):
@@ -113,38 +124,8 @@ class _CommonMorfessorBase:
         if self._segment_only:
             raise SegmentOnlyModelException()
 
-    def _epoch_checks(self):
-        """Apply per epoch checks"""
-        # self._check_integrity()
-        pass
-
-    def _epoch_update(self, epoch_num: int):
-        """Do model updates that are necessary between training epochs.
-
-        The argument is the number of training epochs finished.
-
-        In practice, this does two things:
-        - If random skipping is in use, reset construction counters.
-        - If semi-supervised learning is in use and there are alternative
-          analyses in the annotated data, select the annotations that are
-          most likely given the model parameters. If not hand-set, update
-          the weight of the annotated corpus.
-
-        This method should also be run prior to training (with the
-        epoch number argument as 0).
-
-        """
-        forced_epochs = 0
-        if self._corpus_weight_updater is not None:
-            if self._corpus_weight_updater.update(self, epoch_num):
-                forced_epochs += 2
-
-        self._analysis_counter = Counter()
-        if self._supervised:
-            self._update_annotation_choices()
-            self.cost._annot_coding.update_weight()
-
-        return forced_epochs
+    def _is_semisupervised(self) -> bool:
+        return len(self._annotations) > 0
 
     def _update_annotation_choices(self):
         """Update the selection of alternative analyses in annotations.
@@ -152,7 +133,7 @@ class _CommonMorfessorBase:
         For semi-supervised models, select the most likely alternative
         analyses included in the annotations of the compounds.
         """
-        if not self._supervised:
+        if not self._is_semisupervised():
             return
 
         # Collect constructions from the most probable segmentations
@@ -189,13 +170,16 @@ class _CommonMorfessorBase:
                 bestanalysis = analysis
         return bestanalysis, bestcost
 
+    @abstractmethod
     def _add_compound(self, compound: str, c: int):
         """Add compound with count c to data."""
-        self.cost.update_boundaries(compound, c)
-        self._modify_construction_count(compound, c)
-        self._tree[compound].rcount += c
+        pass
 
-    def _clear_compound_analysis(self, compound: str):  # TODO [Bauwens]: Why is this implementation empty?
+    @abstractmethod
+    def _load_compound(self, dp: DataPoint):
+        pass
+
+    def _clear_compound_analysis(self, compound: str):  # TODO [Bauwens]: Why is this implementation empty? Are we sure it shouldn't be like the body of self.clear_segmentations()?
         """Clear analysis of a compound from model"""
         pass
 
@@ -211,57 +195,29 @@ class _CommonMorfessorBase:
         self._analysis_counter[construction] += 1
         return False
 
-    def _modify_construction_count(self, construction: str, dcount: int):
-        """Modify the count of construction by dcount.
-
-        For virtual constructions, recurses to child nodes in the
-        tree. For real constructions, adds/removes construction
-        to/from the lexicon whenever necessary.
-
-        """
-        if dcount == 0 or construction is None:
-            return
-        if construction in self._tree:
-            rcount, count, splitloc = self._tree[construction]
-        else:
-            rcount, count, splitloc = 0, 0, None
-        newcount = count + dcount
-        # observe that this comparison will not work correctly if counts
-        # are floats rather than ints
-        if newcount == 0:
-            if construction in self._tree:
-                del self._tree[construction]
-        else:
-            self._tree[construction] = ConstructionNode(rcount, newcount,
-                                                        splitloc)
-        if splitloc:
-            # Virtual construction
-            for child in self.cc.splitn(construction, splitloc):
-                self._modify_construction_count(child, dcount)
-        else:
-            self.cost.update(construction, newcount-count)
-            # Real construction
-
     def get_compounds(self):
         """Return the compound types stored by the model."""
         self._assert_not_restricted()
-        return [w for w, node in self._tree.items()
+        return [w
+                for w, node in self._tree.items()
                 if node.rcount > 0]
 
     def get_compound_counts(self):
         """Return the compound types stored by the model."""
         self._assert_not_restricted()
-        return [(w, node.rcount) for (w, node) in self._tree.items()
+        return [(word, node.rcount)
+                for word, node in self._tree.items()
                 if node.rcount > 0]
 
     def get_constructions(self):
         """Return a list of the present constructions and their counts."""
-        return sorted((c, node.count) for c, node in self._tree.items()
+        return sorted((word, node.count)
+                      for word, node in self._tree.items()
                       if not node.splitloc)
 
-    def get_cost(self):
+    def get_cost(self) -> float:
         """Return current model encoding cost."""
-        return self.cost.cost()
+        return sum(self.cost.cost())
 
     def get_pseudomodel(self, viterbismooth, viterbimaxlen):
         self._assert_not_restricted()
@@ -269,12 +225,10 @@ class _CommonMorfessorBase:
             node = self._tree[w]
             if node.rcount == 0:
                 continue
-            constructions, _ = self.viterbi_segment(
-                w, viterbismooth, viterbimaxlen)
+            constructions, _ = self.viterbi_segment(w, viterbismooth, viterbimaxlen)
             yield (node.rcount, w, constructions)
 
     def load_annotations(self, annotations: Dict[str,List[List[str]]], annotationweight: float):
-        self._supervised = True
         self._annotations = annotations
         self.cost.set_annot_coding_weight(annotationweight)
         self._update_annotation_choices()
@@ -474,89 +428,6 @@ class _CommonMorfessorBase:
 
         return constructions, path_cost
 
-    def _forward_backward(self, compound: str, freq: int, maxlen: int=30):
-        grid_alpha = {'start': (0.0, None)}
-        grid_beta = {'stop': (0.0, None)}
-        tokens = self.cost.all_tokens()
-        logtokens = math.log(tokens) if tokens > 0 else 0
-
-        local_morph_costs = {}
-
-        badlikelihood = self.cost.bad_likelihood(compound, 0)
-
-        ## Forward pass
-        for t in itertools.chain(self.cc.split_locations(compound), ['stop']):
-            # logsum of all paths to current node.
-            # Note that we can come from any node in history.
-            negcosts = []
-
-            for pt in tail(maxlen, itertools.chain(['start'], self.cc.split_locations(compound, stop=t))):
-                if grid_alpha[pt][0] is None:
-                    continue
-                construction = self.cc.slice(compound, pt, t)
-                if construction not in local_morph_costs:
-                    count = self.get_construction_count(construction)
-                    if count > 0:
-                        cost = (logtokens - math.log(count))
-                    elif self.cc.is_atom(construction):
-                        cost = badlikelihood
-                    else:
-                        local_morph_costs[construction] = None
-                        continue
-                    assert cost >= 0
-                    local_morph_costs[construction] = cost
-                cost = local_morph_costs[construction]
-                if cost is None:
-                    continue
-                cost += grid_alpha[pt][0]
-                #_logger.debug("cost(%s)=%.2f", construction, cost)
-                negcosts.append(-cost)
-            totcost = -logsumexp(negcosts)
-            grid_alpha[t] = (totcost, None)
-
-        ## Backward pass
-        for t in itertools.chain(reversed(list(self.cc.split_locations(compound))), ['start']):
-            negcosts = []
-            for pt in itertools.islice(
-                    itertools.chain(self.cc.split_locations(compound, start=t), ['stop']), maxlen):
-                if grid_beta[pt][0] is None:
-                    continue
-                construction = self.cc.slice(compound, t, pt)
-                cost = local_morph_costs[construction]
-                if cost is None:
-                    continue
-                cost += grid_beta[pt][0]
-                negcosts.append(-cost)
-            totcost = -logsumexp(negcosts)
-            grid_beta[t] = (totcost, None)
-
-        ## Merge pass
-        w_expected = Counter()
-        totcost = grid_alpha['stop'][0]
-        # grid_alpha['stop'][0], grid_beta['start'][0] are approx equal
-        for t in itertools.chain(self.cc.split_locations(compound), ['stop']):
-            for pt in tail(maxlen, itertools.chain(['start'], self.cc.split_locations(compound, stop=t))):
-                # grid_alpha[pt][0] is the total probability of all paths ending at pt
-                # grid_beta[t][0] is the total probability of all paths starting at t
-                # the compound pt:t probability is the same as cached previously
-                if grid_alpha[pt][0] is None:
-                    continue
-                if grid_beta[t][0] is None:
-                    continue
-                construction = self.cc.slice(compound, pt, t)
-                cost = local_morph_costs[construction]
-                if cost is None:
-                    continue
-                expect = math.exp(
-                    -grid_alpha[pt][0] -grid_beta[t][0] -cost + totcost)
-                if expect > 1:
-                    occurs = compound.count(construction)
-                    assert expect <= occurs + EPS, '"{}" has expect {} occurs {}'.format(
-                        construction, expect, occurs)
-                w_expected[construction] += freq * expect
-
-        return w_expected, freq * totcost
-
     #TODO project lambda
     def forward_logprob(self, compound: str):
         """Find log-probability of a compound using the forward algorithm.
@@ -643,11 +514,9 @@ class _CommonMorfessorBase:
                         cost += (logtokens - theta * math.log(count + addcount))
                     elif addcount > 0:
                         if self.cost.tokens() == 0:
-                            cost += (addcount * math.log(addcount) +
-                                    newboundcost + self.cost.get_coding_cost(construction))
+                            cost += addcount * math.log(addcount) + newboundcost + self.cost.get_coding_cost(construction)
                         else:
-                            cost += (logtokens - math.log(addcount) +
-                                    newboundcost + self.cost.get_coding_cost(construction))
+                            cost += logtokens - math.log(addcount) + newboundcost + self.cost.get_coding_cost(construction)
 
                     elif self.cc.is_atom(construction):
                         cost += badlikelihood
@@ -696,7 +565,7 @@ class _CommonMorfessorBase:
     def get_params(self) -> dict:
         """Returns a dict of hyperparameters."""
         params = {'corpusweight': self.get_corpus_coding_weight()}
-        if self._supervised:
+        if self._is_semisupervised():
             params['annotationweight'] = self.cost._annot_coding.weight
         if isinstance(self.cc, BaseConstructionMethods):
             params['forcesplit'] = ''.join(sorted(self.cc._force_splits))
@@ -705,7 +574,7 @@ class _CommonMorfessorBase:
         return params
 
 
-class MorfessorBaselineSegmenter:
+class MorfessorBaselineSegmenter(ABC):
     @abstractmethod
     def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
         pass
@@ -718,7 +587,6 @@ class ViterbiSegmenter(MorfessorBaselineSegmenter):
         Optimize segmentation of the compound using the Viterbi algorithm.
 
         Arguments:
-            compound: compound to optimize
             addcount: constant for additive smoothing of Viterbi probs
             maxlen: maximum length for a construction
         """
@@ -762,7 +630,10 @@ class RecursiveSegmenter(MorfessorBaselineSegmenter):
 class FlatteningSegmenter(MorfessorBaselineSegmenter):
 
     def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
-        return model._get_stored_analysis(compound)
+        segments = model._get_stored_analysis(compound)
+        model._clear_compound_analysis(compound)
+        model._set_compound_analysis(compound, segments)
+        return segments
 
 
 class MorfessorBaseline(_CommonMorfessorBase):
@@ -774,27 +645,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
     that they can be moved back to the parent class.
     """
 
-    def load_data(self, data: Iterable[DataPoint]):
-        """Load data to initialize the model for batch training.
-
-        Arguments:
-            data: iterator of DataPoint tuples
-
-        Adds the compounds in the corpus to the model lexicon. Returns
-        the total cost.
-
-        """
-        self._assert_not_restricted()
-        for dp in data:
-            self._load_compound(dp)
-        return self.get_cost()
-
-    def _load_compound(self, dp: DataPoint):
-        self._add_compound(dp.compound, dp.count)
-
-        self._clear_compound_analysis(dp.compound)
-        self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
-
     # FIXME [Grönroos]: refactor?
     def load_segmentations(self, segmentations: Iterable[Tuple[int,str,List[str]]]):
         for count, compound, constructions in segmentations:
@@ -803,6 +653,17 @@ class MorfessorBaseline(_CommonMorfessorBase):
             self._clear_compound_analysis(compound)
             self._set_compound_analysis(compound, self.cc.splitn(compound, splitlocs))
         return self.get_cost()
+
+    def _add_compound(self, compound: str, c: int):
+        self.cost.update_boundaries(compound, c)
+        self._modify_construction_count(compound, c)
+        self._tree[compound].rcount += c
+
+    def _load_compound(self, dp: DataPoint):
+        self._add_compound(dp.compound, dp.count)
+
+        self._clear_compound_analysis(dp.compound)
+        self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
 
     def make_segment_only(self):
         """Reduce the size of this model by removing all non-morphs from the
@@ -817,13 +678,14 @@ class MorfessorBaseline(_CommonMorfessorBase):
         self._tree = {k: v for (k, v) in self._tree.items()
                       if not v.splitloc}
 
-    def _remove(self, construction: str):
+    def _remove(self, construction: str) -> Tuple[int,int]:
         """Remove construction from model."""
-        rcount, count, splitloc = self._tree[construction]
+        node = self._tree[construction]
+        rcount, count = node.rcount, node.count
         self._modify_construction_count(construction, -count)
         return rcount, count
 
-    def clear_segmentation(self):
+    def clear_segmentations(self):
         for compound in self.get_compounds():
             self._clear_compound_analysis(compound)
             self._set_compound_analysis(compound, [compound])
@@ -833,7 +695,6 @@ class MorfessorBaseline(_CommonMorfessorBase):
 
         Raises KeyError if compound is not present in the training
         data. For segmenting new words, use viterbi_segment(compound).
-
         """
         _, _, splitloc = self._tree[compound]
         constructions = []
@@ -857,28 +718,17 @@ class MorfessorBaseline(_CommonMorfessorBase):
         annotation cost, and random split counters are recalculated after
         each iteration.
 
-        :param algorithm: indicates the splitting algorithm used.
-        :param algorithm_params: parameters passed to the splitting algorithm.
+        :param algorithm: the splitting algorithm used.
         :param finish_threshold: the stopping threshold. Training stops when
                                  the improvement of the last iteration is
                                  smaller then finish_threshold * #boundaries
         :param max_epochs: maximum number of epochs to train
         """
         epochs = 0
-        forced_epochs = max(1, self._epoch_update(epochs))
+        min_epochs = max(1, self._epoch_update(epochs))
         newcost = self.get_cost()
         compounds = list(self.get_compounds())
         _logger.info(f"Compounds in training data: {len(compounds)} types / {self.cost.compound_tokens()} tokens")
-
-        if isinstance(algorithm, FlatteningSegmenter):  # TODO: You can simplify this to the loop below if you put the clear and set into the Segmenter object.
-            _logger.info("Flattening analysis tree")
-            for compound in _progress(compounds):
-                segments = algorithm.segment(self, compound)
-                self._clear_compound_analysis(compound)
-                self._set_compound_analysis(compound, segments)
-            _logger.info("Done.")
-            return 1, self.get_cost()
-
         _logger.info("Starting batch training")
         _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
 
@@ -889,8 +739,12 @@ class MorfessorBaseline(_CommonMorfessorBase):
                 _logger.debug(f"#{w} -> {' + '.join(self.cc.to_string(s) for s in segments)}")
             epochs += 1
 
+            if isinstance(algorithm, FlatteningSegmenter):
+                _logger.info("Flattened analysis tree.")
+                return epochs, self.get_cost()
+
             _logger.debug("Cost before epoch update: %s" % self.get_cost())
-            forced_epochs = max(forced_epochs, self._epoch_update(epochs))
+            min_epochs = max(min_epochs, self._epoch_update(epochs))
             oldcost = newcost
             newcost = self.get_cost()
             lc, cc = self.cost.cost_before_tuning()
@@ -899,15 +753,19 @@ class MorfessorBaseline(_CommonMorfessorBase):
 
             _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
             _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
-            if (forced_epochs == 0 and
-                    newcost >= oldcost - finish_threshold *
-                    self.cost.compound_tokens()):
-                break
-            if forced_epochs > 0:
-                forced_epochs -= 1
-            if max_epochs is not None and epochs >= max_epochs:
-                _logger.info("Max number of epochs reached, stop training")
-                break
+
+            # Handle minimal and maximal epochs.
+            if min_epochs <= 0:
+                if newcost >= oldcost - finish_threshold*self.cost.compound_tokens():
+                    break
+            else:
+                min_epochs -= 1
+
+            if max_epochs is not None:
+                if epochs >= max_epochs:
+                    _logger.info("Max number of epochs reached, stop training")
+                    break
+
         _logger.info("Done.")
         return epochs, newcost
 
@@ -932,8 +790,7 @@ class MorfessorBaseline(_CommonMorfessorBase):
                     FIXME [Bauwens]: That's not true.
             count_modifier: function for adjusting the counts of each compound
             epoch_interval: number of compounds to process before starting a new epoch
-            algorithm: indicates the splitting algorithm used.
-            algorithm_params: parameters passed to the splitting algorithm.
+            algorithm: the splitting algorithm used.
             init_rand_split: probability for random splitting a compound to
                                at any point for initializing the model. None
                                or 0 means no random splitting.
@@ -980,6 +837,39 @@ class MorfessorBaseline(_CommonMorfessorBase):
         _logger.info("Tokens processed: %s\tCost: %s" % (i, newcost))
         return epochs, newcost
 
+    def _epoch_checks(self):
+        """Apply per epoch checks"""
+        # self._check_integrity()  # No longer exists...
+        pass
+
+    def _epoch_update(self, epoch_num: int) -> int:
+        """Do model updates that are necessary between training epochs.
+
+        The argument is the number of training epochs finished.
+
+        In practice, this does two things:
+        - If random skipping is in use, reset construction counters.
+        - If semi-supervised learning is in use and there are alternative
+          analyses in the annotated data, select the annotations that are
+          most likely given the model parameters. If not hand-set, update
+          the weight of the annotated corpus.
+
+        This method should also be run prior to training (with the
+        epoch number argument as 0).
+
+        """
+        forced_epochs = 0
+        if self._corpus_weight_updater is not None:
+            if self._corpus_weight_updater.update(self, epoch_num):
+                forced_epochs += 2
+
+        self._analysis_counter = Counter()
+        if self._is_semisupervised():
+            self._update_annotation_choices()
+            self.cost._annot_coding.update_weight()
+
+        return forced_epochs
+
     def _set_compound_analysis(self, compound: str, parts):
         """Set analysis of compound to according to given segmentation.
 
@@ -1000,6 +890,36 @@ class MorfessorBaseline(_CommonMorfessorBase):
             self._tree[compound] = ConstructionNode(rcount, count, splitloc)
             for constr in parts:
                 self._modify_construction_count(constr, count)
+
+    def _modify_construction_count(self, construction: str, dcount: int):
+        """Modify the count of construction by dcount.
+
+        For virtual constructions, recurses to child nodes in the
+        tree. For real constructions, adds/removes construction
+        to/from the lexicon whenever necessary.
+
+        """
+        if dcount == 0 or construction is None:
+            return
+        if construction in self._tree:
+            node = self._tree[construction]
+            rcount, count, splitloc = node.rcount, node.count, node.splitloc
+        else:
+            rcount, count, splitloc = 0, 0, None
+        newcount = count + dcount
+        # observe that this comparison will not work correctly if counts
+        # are floats rather than ints
+        if newcount == 0:
+            if construction in self._tree:
+                del self._tree[construction]
+        else:
+            self._tree[construction] = ConstructionNode(rcount, newcount, splitloc)
+        if splitloc:
+            # Virtual construction
+            for child in self.cc.splitn(construction, splitloc):
+                self._modify_construction_count(child, dcount)
+        else:
+            self.cost.update(construction, newcount - count)  # Real construction
 
     def get_segmentations(self):
         """Retrieve segmentations for all compounds encoded by the model."""

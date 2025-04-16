@@ -1,4 +1,6 @@
 """Implementations for corpus and lexicon encoding and weighting"""
+from typing import List
+from abc import ABC, abstractmethod
 
 import collections
 import logging
@@ -6,6 +8,7 @@ import math
 import re
 
 from .utils import _progress
+from .constructions.base import _ConstructionMethods
 
 _logger = logging.getLogger(__name__)
 
@@ -280,7 +283,12 @@ class LexiconEncoding(Encoding):
         return cost
 
 
-class CorpusWeight(object):
+class CorpusWeight(ABC):
+
+    @abstractmethod
+    def update(self, model, epoch: int):
+        pass
+
     @classmethod
     def move_direction(cls, model, direction, epoch):
         if direction != 0:
@@ -299,7 +307,7 @@ class FixedCorpusWeight(CorpusWeight):
     def __init__(self, weight):
         self.weight = weight
 
-    def update(self, model, _):
+    def update(self, model, epoch: int):
         model.set_corpus_coding_weight(self.weight)
         return False
 
@@ -336,8 +344,7 @@ class AlignedTokenCountCorpusWeight(CorpusWeight):
         else:
             self.linguistic_dev = None
 
-
-    def update(self, model, epoch):
+    def update(self, model, epoch: int):
         if epoch < 1:
             # Can't use viterbi_segment before first epoch
             return False
@@ -455,15 +462,14 @@ class AlignedTokenCountCorpusWeight(CorpusWeight):
 
 class AnnotationCorpusWeight(CorpusWeight):
     """Class for using development annotations to update the corpus weight
-    during batch training
+    during batch training."""
 
-    """
-
-    def __init__(self, devel_set, threshold=0.01):
+    def __init__(self, devel_set, threshold, cc: _ConstructionMethods):
         self.data = devel_set
         self.threshold = threshold
+        self.cc = cc
 
-    def update(self, model, epoch):
+    def update(self, model, epoch: int):
         """Tune model corpus weight based on the precision and
         recall of the development data, trying to keep them equal"""
         if epoch < 1:
@@ -475,22 +481,23 @@ class AnnotationCorpusWeight(CorpusWeight):
 
         return self.move_direction(model, d, epoch)
 
-    @classmethod
-    def _boundary_recall(cls, prediction, reference):
-        """Calculate average boundary recall for given segmentations."""
+    def _boundary_recall(self, prediction: List[List[List[str]]], reference: List[List[List[str]]]):
+        """Calculate average boundary recall for given segmentations.
+           You can have multiple predictions per example and multiple references per example."""
         rec_total = 0
         rec_sum = 0.0
-        for pre_list, ref_list in zip(prediction, reference):
+        for example_predictions, example_references in zip(prediction, reference):
+            # For this example, find the best prediction-reference pair.
             best = -1
-            for ref in ref_list:
-                # list of internal boundary positions
-                ref_b = set(segmentation_to_splitloc(ref))
-                if len(ref_b) == 0:
+            for ref in example_references:
+                reference_boundaries = set(self.cc.parts_to_splitlocs(ref))
+                if not reference_boundaries:  # By definition, this has recall of 1.0, and you can't do better than this, so terminate early.
                     best = 1.0
                     break
-                for pre in pre_list:
-                    pre_b = set(segmentation_to_splitloc(pre))
-                    r = len(ref_b.intersection(pre_b)) / float(len(ref_b))
+
+                for pre in example_predictions:
+                    prediction_boundaries = set(self.cc.parts_to_splitlocs(pre))
+                    r = len(reference_boundaries & prediction_boundaries) / len(reference_boundaries)
                     if r > best:
                         best = r
             if best >= 0:
@@ -498,11 +505,10 @@ class AnnotationCorpusWeight(CorpusWeight):
                 rec_total += 1
         return rec_sum, rec_total
 
-    @classmethod
-    def _bpr_evaluation(cls, prediction, reference):
+    def _bpr_evaluation(self, prediction, reference):
         """Return boundary precision, recall, and F-score for segmentations."""
-        rec_s, rec_t = cls._boundary_recall(prediction, reference)
-        pre_s, pre_t = cls._boundary_recall(reference, prediction)
+        rec_s, rec_t = self._boundary_recall(prediction, reference)
+        pre_s, pre_t = self._boundary_recall(reference, prediction)
         rec = rec_s / rec_t
         pre = pre_s / pre_t
         f = 2.0 * pre * rec / (pre + rec)
@@ -522,10 +528,8 @@ class AnnotationCorpusWeight(CorpusWeight):
         undersegmentation, and 0 if no changes are required.
 
         """
-        pre, rec, f = self._bpr_evaluation([[x] for x in segments],
-                                           annotations)
-        _logger.info("Boundary evaluation: precision %.4f; recall %.4f" %
-                     (pre, rec))
+        pre, rec, f = self._bpr_evaluation([[x] for x in segments], annotations)
+        _logger.info("Boundary evaluation: precision %.4f; recall %.4f" % (pre, rec))
         if abs(pre - rec) < self.threshold:
             return 0
         elif rec > pre:
@@ -539,17 +543,15 @@ class MorphLengthCorpusWeight(CorpusWeight):
         self.morph_length = morph_lenght
         self.threshold = threshold
 
-    def update(self, model, epoch):
+    def update(self, model, epoch: int):
         if epoch < 1:
             return False
         cur_length = self.calc_morph_length(model)
 
         _logger.info("Current morph-length: {}".format(cur_length))
 
-        if (abs(self.morph_length - cur_length) / self.morph_length >
-                self.threshold):
-            d = abs(self.morph_length - cur_length) / (self.morph_length
-                                                       - cur_length)
+        if abs(self.morph_length - cur_length) / self.morph_length > self.threshold:
+            d = abs(self.morph_length - cur_length) / (self.morph_length - cur_length)
             return self.move_direction(model, d, epoch)
         return False
 
@@ -573,16 +575,14 @@ class NumMorphCorpusWeight(CorpusWeight):
         self.num_morph_types = num_morph_types
         self.threshold = threshold
 
-    def update(self, model, epoch):
+    def update(self, model, epoch: int):
         if epoch < 1:
             return False
         cur_morph_types = model._lexicon_coding.boundaries
 
         _logger.info("Number of morph types: {}".format(cur_morph_types))
 
-
-        if (abs(self.num_morph_types - cur_morph_types) / self.num_morph_types
-                > self.threshold):
+        if abs(self.num_morph_types - cur_morph_types) / self.num_morph_types > self.threshold:
             d = (abs(self.num_morph_types - cur_morph_types) /
                  (self.num_morph_types - cur_morph_types))
             return self.move_direction(model, d, epoch)

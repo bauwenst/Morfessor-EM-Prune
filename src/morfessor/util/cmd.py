@@ -506,7 +506,7 @@ def main(args):
     if args.develfile is not None:
         develannots = io.read_annotations_file(args.develfile,
                                                analysis_sep=analysis_sep)
-        updater = AnnotationCorpusWeight(develannots, args.threshold)
+        updater = AnnotationCorpusWeight(develannots, args.threshold, constr_class)  # threshold=0.01 is suggested
         model.set_corpus_weight_updater(updater)
 
     if args.morphlength is not None:
@@ -569,7 +569,7 @@ def main(args):
         if dampfunc is not None:
             data = count_modifier(data, dampfunc, onlinedata)
         if args.splitprob is not None:
-            data = rand_split(data, BaseConstructionMethods, args.splitprob)
+            data = rand_split(data, constr_class, args.splitprob)
 
 
     # Train model
@@ -653,7 +653,7 @@ def main(args):
                        start_corpus_weight) > 0.1:
                     model.set_corpus_weight_updater(
                         FixedCorpusWeight(model.get_corpus_coding_weight()))
-                    model.clear_segmentation()
+                    model.clear_segmentations()
                     for alg, algp in zip(args.algorithms, algparams):
                         _logger.info("Batch retraining with %s algorithm", alg)
                         e, c = model.train_batch(

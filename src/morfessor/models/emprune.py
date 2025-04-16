@@ -4,12 +4,14 @@ from collections import Counter
 
 import math
 import logging
+import itertools
 from copy import deepcopy
 from scipy.special import digamma
 
-from .baseline import _CommonMorfessorBase, ConstructionNode, DataPoint
+from .baseline import _CommonMorfessorBase, ConstructionNode, DataPoint, EPS
 from ..util.cost import FrequencyDistributionMode, EmCost
 from ..util.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha, AutotunePruningCriterion
+from ..util.utils import tail, logsumexp
 
 _logger = logging.getLogger(__name__)
 
@@ -36,7 +38,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
         self.cost = EmCost(self.cc, corpusweight, nolexcost, freq_distr)
         self.cost.load_lexicon(em_substr)
 
-    def e_step(self, maxlen: int):
+    def e_step_soft(self, maxlen: int):
         expected = Counter()
         compounds = list(self.get_compound_counts())
         tot_cost = 0
@@ -57,7 +59,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
             tot_cost += cost
         return expected, tot_cost
 
-    def m_step(self, expected: Counter[str], expected_freq_threshold: int, noexpdigamma: bool=False):
+    def m_step(self, expected: Counter[str], expected_freq_threshold: float, noexpdigamma: bool=False):
         # prune out infrequent
         # FIXME: is protecting length 1 useful? max(c, 1e-6))?
         expected = Counter(
@@ -76,7 +78,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
         # set model parameters
         self.cost.counts = expected
 
-    def prune_lexicon(self, prune_criterion: PruningCriterion, lateen: LateenMode, maxlen: int, expected_freq_threshold: int):
+    def prune_lexicon(self, prune_criterion: PruningCriterion, lateen: LateenMode, maxlen: int, expected_freq_threshold: float):
         self.cost.reset()
         if lateen == LateenMode.PRUNE:
             em_params = deepcopy(self.cost)
@@ -142,7 +144,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
             delta_lc = lc - orig_lc
             delta_cc = cc - orig_cc
             threshold_alpha, delta_cost, decision = prune_cost_at_alpha(current_alpha, delta_lc, delta_cc)
-            if self._supervised:
+            if self._is_semisupervised():
                 # this only protects currently active annotations
                 if self.cost._annot_coding.constructions.get(construction, 0) > 0:
                     decision = PruneDecision.NEVER_SUPERVISED
@@ -156,45 +158,129 @@ class MorfessorEMPrune(_CommonMorfessorBase):
                        expected_freq_threshold: float=0.5,
                        maxlen: int=30, lateen: LateenMode=LateenMode.NONE, noexpdigamma: bool=False):
         done = False
-        for epoch in range(max_epochs):
+        epoch = 0
+        while epoch < max_epochs:
+            epoch += 1
             for sub_epoch in range(sub_epochs):
                 # E-step
                 if lateen == LateenMode.FULL and sub_epoch == sub_epochs - 1:
                     _logger.info("Lateen EM: using Viterbi e-step")
                     expected, cost = self.e_step_hard(maxlen=maxlen)
                 else:
-                    expected, cost = self.e_step(maxlen=maxlen)
+                    expected, cost = self.e_step_soft(maxlen=maxlen)
                 _logger.info("E-step cost: %s tokens: %s" % (cost, self.cost.all_tokens()))
-                if self._supervised:
+
+                # Optionally add semi-supervision to the results of the E-step
+                if self._is_semisupervised():
                     self._update_annotation_choices()
                     self.cost._annot_coding.update_weight()
                     for constr, count in self.cost._annot_coding.constructions.items():
                         expected[constr] += self.cost._annot_coding.weight * count
+
                 # M-step
-                self.m_step(
-                    expected,
-                    expected_freq_threshold=expected_freq_threshold,
-                    noexpdigamma=noexpdigamma
-                )
+                self.m_step(expected, expected_freq_threshold=expected_freq_threshold, noexpdigamma=noexpdigamma)
+
             if done:
                 break
-            # cost-based pruning of lexicon
+
+            # Cost-based pruning of lexicon
             cost, done = self.prune_lexicon(prune_criterion, lateen,
                                             maxlen=maxlen, expected_freq_threshold=expected_freq_threshold)
             lc, cc = self.cost.cost_before_tuning()
-            _logger.info("Cost after pruning: %s types: %s tokens: %s" %
-                (cost, self.cost.types(), self.cost.all_tokens()))
+            _logger.info("Cost after pruning: %s types: %s tokens: %s" % (cost, self.cost.types(), self.cost.all_tokens()))
             _logger.info("Unweighted corpus cost: %s lexicon cost: %s" % (cc, lc))
-            if done:
+            if done:  # TODO: No break here?
                 _logger.info("Reached pruning goal")
+
         return epoch, self.get_cost()
+
+    def _forward_backward(self, compound: str, freq: int, maxlen: int=30):
+        grid_alpha = {'start': (0.0, None)}
+        grid_beta  = {'stop' : (0.0, None)}
+        tokens = self.cost.all_tokens()
+        logtokens = math.log(tokens) if tokens > 0 else 0
+
+        local_morph_costs = {}
+
+        badlikelihood = self.cost.bad_likelihood(compound, 0)
+
+        ## Forward pass
+        for t in itertools.chain(self.cc.split_locations(compound), ['stop']):
+            # logsum of all paths to current node.
+            # Note that we can come from any node in history.
+            negcosts = []
+
+            for pt in tail(maxlen, itertools.chain(['start'], self.cc.split_locations(compound, stop=t))):
+                if grid_alpha[pt][0] is None:
+                    continue
+                construction = self.cc.slice(compound, pt, t)
+                if construction not in local_morph_costs:
+                    count = self.get_construction_count(construction)
+                    if count > 0:
+                        cost = (logtokens - math.log(count))
+                    elif self.cc.is_atom(construction):
+                        cost = badlikelihood
+                    else:
+                        local_morph_costs[construction] = None
+                        continue
+                    assert cost >= 0
+                    local_morph_costs[construction] = cost
+                cost = local_morph_costs[construction]
+                if cost is None:
+                    continue
+                cost += grid_alpha[pt][0]
+                #_logger.debug("cost(%s)=%.2f", construction, cost)
+                negcosts.append(-cost)
+            totcost = -logsumexp(negcosts)
+            grid_alpha[t] = (totcost, None)
+
+        ## Backward pass
+        for t in itertools.chain(reversed(list(self.cc.split_locations(compound))), ['start']):
+            negcosts = []
+            for pt in itertools.islice(
+                    itertools.chain(self.cc.split_locations(compound, start=t), ['stop']), maxlen):
+                if grid_beta[pt][0] is None:
+                    continue
+                construction = self.cc.slice(compound, t, pt)
+                cost = local_morph_costs[construction]
+                if cost is None:
+                    continue
+                cost += grid_beta[pt][0]
+                negcosts.append(-cost)
+            totcost = -logsumexp(negcosts)
+            grid_beta[t] = (totcost, None)
+
+        ## Merge pass
+        w_expected = Counter()
+        totcost = grid_alpha['stop'][0]
+        # grid_alpha['stop'][0], grid_beta['start'][0] are approx equal
+        for t in itertools.chain(self.cc.split_locations(compound), ['stop']):
+            for pt in tail(maxlen, itertools.chain(['start'], self.cc.split_locations(compound, stop=t))):
+                # grid_alpha[pt][0] is the total probability of all paths ending at pt
+                # grid_beta[t][0] is the total probability of all paths starting at t
+                # the compound pt:t probability is the same as cached previously
+                if grid_alpha[pt][0] is None:
+                    continue
+                if grid_beta[t][0] is None:
+                    continue
+                construction = self.cc.slice(compound, pt, t)
+                cost = local_morph_costs[construction]
+                if cost is None:
+                    continue
+                expect = math.exp(-grid_alpha[pt][0] -grid_beta[t][0] -cost + totcost)
+                if expect > 1:
+                    occurs = compound.count(construction)
+                    assert expect <= occurs + EPS, f'"{construction}" has expect {expect} occurs {occurs}'
+                w_expected[construction] += freq * expect
+
+        return w_expected, freq * totcost
 
     def _getViterbiBoundaryCost(self) -> float:
         return 0.0
 
     def _add_compound(self, compound: str, c: int):
         self.cost.update_boundaries(compound, c)
-        self._tree[compound] = ConstructionNode(c, c, [])
+        self._tree[compound] = ConstructionNode(rcount=c, count=c, splitloc=tuple())
 
     def _load_compound(self, dp: DataPoint):
         self._add_compound(dp.compound, dp.count)

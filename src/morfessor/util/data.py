@@ -3,6 +3,8 @@ from collections import Counter, namedtuple
 from dataclasses import dataclass
 from random import random
 
+from .constructions.base import _ConstructionMethods
+
 
 @dataclass
 class DataPoint:
@@ -59,7 +61,7 @@ def count_modifier(data, modifier, online=False):
             yield dp._replace(count=modifier(dp.count))
 
 
-def rand_split(data, cc, threshold, rand_gen=random):
+def rand_split(data, cc: _ConstructionMethods, threshold, rand_gen=random):
     for dp in data:
         forced = cc.force_split_locations(dp.compound)
         all = cc.split_locations(dp.compound)

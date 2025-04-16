@@ -1,23 +1,24 @@
-
+from typing import Tuple
+from enum import Enum
 import logging
 import numbers
 from collections import Counter
-
-from enum import Enum
 import math
 
 from .corpus import CorpusEncoding, LexiconEncoding, AnnotatedCorpusEncoding, FixedCorpusWeight
 from .utils import SortedCounter
+from .constructions.base import _ConstructionMethods
 
 _logger = logging.getLogger(__name__)
 
 
-class Cost(object):
+class Cost:
     """
     Class for calculating the entropy (encoding length) of a corpus and lexicon.
     """
-    def __init__(self, contr_class, corpusweight=1.0):
+    def __init__(self, contr_class: _ConstructionMethods, corpusweight=1.0):
         self.cc = contr_class
+
         # Cost variables
         self._lexicon_coding = LexiconEncoding()
         self._corpus_coding = CorpusEncoding(self._lexicon_coding)
@@ -25,7 +26,7 @@ class Cost(object):
 
         self._corpus_weight_updater = None
 
-        #Set corpus weight updater
+        # Set corpus weight updater
         self.set_corpus_weight_updater(corpusweight)
 
         self.counts = Counter()
@@ -52,25 +53,16 @@ class Cost(object):
     def set_annot_observed(self, construction, count):
         self._annot_coding.set_count(construction, count)
 
-    def cost(self):
-        lc = self._lexicon_coding.get_cost()
-        cc = self._corpus_coding.get_cost()
-        if self._annot_coding is not None:
-            cc += self._annot_coding.get_cost()
-        return lc + cc
+    def cost(self) -> Tuple[float,float]:
+        return self._lexicon_coding.get_cost(), \
+               self._corpus_coding.get_cost() + (self._annot_coding.get_cost() if self._annot_coding is not None else 0)
 
-    def cost_before_tuning(self):
-        # invariant to current tuning: reset corpus weight
+    def cost_before_tuning(self) -> Tuple[float,float]:
         current_weight = self._corpus_coding.weight
-        self._corpus_coding.weight = 1.
-        lc = self._lexicon_coding.get_cost()
-        cc = self._corpus_coding.get_cost()
-        if self._annot_coding is not None:
-            ac = self._annot_coding.get_cost()
-            cc += ac
-        # restore corpus weight
+        self._corpus_coding.weight = 1.0
+        lc, cc = self.cost()
         self._corpus_coding.weight = current_weight
-        return (lc, cc)
+        return lc, cc
 
     def update(self, construction, delta):
         if delta == 0:
@@ -89,25 +81,25 @@ class Cost(object):
         if self.counts[construction] == 0:
             self._lexicon_coding.remove(self.cc.lex_key(construction))
 
-    def update_boundaries(self, compound, delta):
+    def update_boundaries(self, compound: str, delta: int):
         self._corpus_coding.boundaries += delta
 
     def coding_length(self, construction):
         pass
 
-    def tokens(self):
+    def tokens(self) -> int:
         return self._corpus_coding.tokens
 
-    def compound_tokens(self):
+    def compound_tokens(self) -> int:
         return self._corpus_coding.boundaries
 
-    def types(self):
+    def types(self) -> int:
         return self._lexicon_coding.boundaries
 
-    def all_tokens(self):
+    def all_tokens(self) -> int:
         return self._corpus_coding.tokens + self._corpus_coding.boundaries
 
-    def newbound_cost(self, count):
+    def newbound_cost(self, count) -> float:
         cost = (self._lexicon_coding.boundaries + count) * math.log(self._lexicon_coding.boundaries + count)
         if self._lexicon_coding.boundaries > 0:
             cost -= self._lexicon_coding.boundaries * math.log(self._lexicon_coding.boundaries)
@@ -121,7 +113,7 @@ class Cost(object):
                         self._lexicon_coding.get_codelength(compound) / \
                         self._corpus_coding.weight
 
-    def get_coding_cost(self, compound):
+    def get_coding_cost(self, compound) -> float:
         return self._lexicon_coding.get_codelength(compound) / self._corpus_coding.weight
 
 
@@ -213,9 +205,9 @@ class EmCost(Cost):
         self._cached_tokens = None
         super().update(*args, **kwargs)
 
-    def update_boundaries(self, *args, **kwargs):
+    def update_boundaries(self, compound: str, delta: int):
         self._cached_tokens = None
-        super().update_boundaries(*args, **kwargs)
+        super().update_boundaries(compound, delta)
 
     def tokens(self):
         if self._cached_tokens is None:
@@ -238,16 +230,10 @@ class EmCost(Cost):
         self._lexicon_coding.reset(self.counts)
         self._corpus_coding.reset(self.counts)
 
-    def cost(self):
-        cc = self._corpus_coding.get_cost()
-        if self.nolexcost:
-            return cc
-        else:
-            lc = self._lexicon_coding.get_cost()
-            return lc + cc
+    def cost(self) -> Tuple[float,float]:
+        lc, cc = super().cost()
+        return (not self.nolexcost)*lc, cc
 
-    def cost_before_tuning(self):
+    def cost_before_tuning(self) -> Tuple[float,float]:
         lc, cc = super().cost_before_tuning()
-        if self.nolexcost:
-            lc = 0
-        return lc, cc
+        return (not self.nolexcost)*lc, cc
