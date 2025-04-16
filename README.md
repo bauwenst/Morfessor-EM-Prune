@@ -1,56 +1,50 @@
-Morfessor 2.0 - Quick start
-===========================
+# Morfessor EM+Prune
+Below is the README from the repo which this is a fork for, but formatted properly. 
 
-
-Installation
-------------
-
+## Installation
 Morfessor 2.0 is installed using setuptools library for Python. To
 build and install the module and scripts to default paths, type
-
+```shell
 python setup.py install
-
+```
 For details, see http://docs.python.org/install/
 
-
-Documentation
--------------
-
+## Documentation
 User instructions for Morfessor 2.0 are available in the docs directory
 as Sphinx source files (see http://sphinx-doc.org/). Instructions how
 to build the documentation can be found in docs/README.
 
 The documentation is also available on-line at http://morfessor.readthedocs.org/
 
-Morfessor EM+Prune
-------------------
-
+## Morfessor EM+Prune
 This branch includes the modifications to Morfessor that enable
 training using Expectation Maximization and Pruning.
 
 Morfessor EM+Prune training achieves better Morfessor cost than the
 earlier local search algorithm.
 
-A simple usage example ::
+### Simple example:
+```shell
+# Create 1M substring seed lexicon direct from a pretokenized corpus
+freq_substr.py --lex-size 1000000 < corpus > freq_substr.1M
 
-    # Create 1M substring seed lexicon direct from a pretokenized corpus
-    freq_substr.py --lex-size 1000000 < corpus > freq_substr.1M
-    
-    # Perform Morfessor EM+Prune training. Autotuning with 10k lexicon size.
-    morfessor \
-        --em-prune freq_substr.1M \
-        -t corpus \
-        --num-morph-types 10000 \
-        --save-segmentation emprune.model
-    
-    # Segment data using the Viterbi algorithm
-    morfessor-segment \
-        testdata \
-        --em-prune emprune.model \
-        --output segmented.testdata
+# Perform Morfessor EM+Prune training. Autotuning with 10k lexicon size.
+morfessor \
+    --em-prune freq_substr.1M \
+    -t corpus \
+    --num-morph-types 10000 \
+    --save-segmentation emprune.model
 
-Additional options for freq_substr.py ::
+# Segment data using the Viterbi algorithm
+morfessor-segment \
+    testdata \
+    --em-prune emprune.model \
+    --output segmented.testdata
+```
 
+### Options
+Additional options for `freq_substr.py`:
+```
     --traindata-list
         Training data is a list of word types preceded by counts, not a corpus.
 
@@ -67,9 +61,10 @@ Additional options for freq_substr.py ::
         Note that hyphens are NOT force split by default anymore,
         to get the same forcesplitting as Baseline,
         you need to specify --forcesplit-both "-"
+```
 
-Additional options for EM+Prune training ::
-
+Additional options for EM+Prune training:
+```
     --traindata-list
         Training data is a list of word types preceded by counts, not a corpus.
 
@@ -113,10 +108,10 @@ Additional options for EM+Prune training ::
     --save-pseudomodel
         use the trained EM+Prune model to segment the training data,
         and save the resulting segmentation as if it was a Morfessor Baseline model.
+```
 
-
-Additional options for segmentation ::
-
+Additional options for segmentation:
+```
     --sample-nbest
         Sample alternative segmentations from n-best list.
         Approximates --sample, but is much faster.
@@ -126,29 +121,22 @@ Additional options for segmentation ::
 
     --sampling-temperature 0.5
         (Inverted) temperature parameter for sampling. (1.0 = unsmoothed)
+```
 
-A note on pretokenization and boundary markers ::
+## A note on pretokenization and boundary markers:
+Morfessor EM+Prune is typically used with *word* boundary markers (marks where the whitespace should go), rather than 
+the *morph* boundary markers (marks word-internal boundaries) used by previous Morfessors.
 
-Morfessor EM+Prune is typically used with *word* boundary markers (marks where the whitespace should go), rather than the *morph*       boundary markers (marks word-internal boundaries) used by previous Morfessors.
 Make sure that the word boundary markers are present in the corpus / word count lists used for Morfessor EM+Prune training, and also in
-the input to Morfessor EM+Prune during segmentation.
-Some ways to achieve this is to use the pyonmttok library with spacer_annotate=True and joiner_annotate=False,
-or the dynamicdata dataloader with pretokenize=True.
-This will insert '▁' (unicode lower one eight block \u2581) as word boundary markers.
-Also remember to adjust your detokenization post-processing script appropriately.
+the input to Morfessor EM+Prune during segmentation. Some ways to achieve this is to use the `pyonmttok` library with `spacer_annotate=True` and `joiner_annotate=False`,
+or the `dynamicdata` dataloader with `pretokenize=True`. This will insert `'▁'` (unicode lower one eight block `\u2581`) as word boundary markers. Also remember to adjust your detokenization post-processing script appropriately.
 
-
-Contact
--------
-
+## Contact
 Questions or feedback? Email: morpho@aalto.fi
 
-
-Citing
-------
-
+## Citing
 If you use the Morfessor EM+Prune training algorithm, please cite
-
+```bib
 @inproceedings{gronroos2020morfessor,
     title={Morfessor {EM+Prune}: Improved Subword Segmentation with Expectation Maximization and Pruning},
     author = {Gr{\"o}nroos, Stig-Arne and Sami Virpioja and Mikko Kurimo},
@@ -158,14 +146,11 @@ If you use the Morfessor EM+Prune training algorithm, please cite
     booktitle = {Proceedings of the 12th Language Resources and Evaluation Conference},
     publisher = {ELRA},
 }
-
-ArXiv preprint available online at
-
-https://arxiv.org/abs/2003.03131
-
+```
+ArXiv preprint available online at https://arxiv.org/abs/2003.03131
 
 For the original Morfessor 2.0: Python implementation, please cite
-
+```bib
 @techreport{virpioja2013morfessor,
     address = {Helsinki, Finland},
     type = {Report},
@@ -177,9 +162,6 @@ For the original Morfessor 2.0: Python implementation, please cite
     year = {2013},
     pages = {38}
 }
+```
 
-The report is available online at 
-
-http://urn.fi/URN:ISBN:978-952-60-5501-5
-
-
+The report is available online at http://urn.fi/URN:ISBN:978-952-60-5501-5
