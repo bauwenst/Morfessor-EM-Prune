@@ -10,9 +10,9 @@ import math
 import numbers
 import random
 
-from morfessor.loss.cost import Cost
+from ..loss.cost import Cost
+from ..loss.corpus import FixedCorpusWeight
 from ..util.constructions.base import _ConstructionMethods, BaseConstructionMethods
-from morfessor.loss.corpus import FixedCorpusWeight
 from ..util.misc import tail, logsumexp, categorical
 from ..util.exception import SegmentOnlyModelException
 from ..util.data.counting_data import DataPoint

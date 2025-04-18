@@ -7,7 +7,7 @@ import math
 
 from .corpus import CorpusEncoding, LexiconEncoding, AnnotatedCorpusEncoding, FixedCorpusWeight
 from ..util.misc import SortedCounter
-from morfessor.util.constructions.base import _ConstructionMethods
+from ..util.constructions.base import _ConstructionMethods
 
 _logger = logging.getLogger(__name__)
 

@@ -10,8 +10,8 @@ from scipy.special import digamma
 
 from ._common import EPS, _CommonMorfessorBase
 from .baseline import DataPoint
-from morfessor.loss.cost import FrequencyDistributionMode, EmCost
-from morfessor.util.emprune.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha, AutotunePruningCriterion
+from ..loss.cost import FrequencyDistributionMode, EmCost
+from ..util.emprune.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha, AutotunePruningCriterion
 from ..util.misc import tail, logsumexp
 
 _logger = logging.getLogger(__name__)

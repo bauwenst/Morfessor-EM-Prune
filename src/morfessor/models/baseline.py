@@ -107,7 +107,6 @@ class MorfessorTree:
         Arguments:
             compound: compound to split
             parts: desired constructions of the compound
-
         """
         parts = list(parts)
         if len(parts) == 1:
@@ -151,7 +150,7 @@ class MorfessorTree:
         else:
             self._model.cost.update(construction, delta_count)  # Real construction
 
-    def _recursive_split(self, construction: str):
+    def _recursive_split(self, construction: str) -> List[str]:
         """
         Optimize segmentation of the construction by recursive splitting.
         Returns list of segments.
@@ -161,15 +160,16 @@ class MorfessorTree:
         """
         # if self._use_skips and self._test_skip(construction):
         #     return self.segment(construction)
+        # Step 1: Remove the construction from the tree to have a fresh start.
         rcount, count = self._remove(construction)
 
-        # Check all binary splits and no split
+        # Step 2: Record the loss when the construction is a leaf, and restore the tree after.
         self._modify_construction_count(construction, count)
         mincost = self._model.get_cost()
         self._modify_construction_count(construction, -count)
 
+        # Step 3: Check all binary splits for a better loss.
         best_splitloc = None
-
         for loc in self._model.cc.split_locations(construction):
             prefix, suffix = self._model.cc.split(construction, loc)
             self._modify_construction_count(prefix, count)
@@ -178,23 +178,27 @@ class MorfessorTree:
             self._modify_construction_count(prefix, -count)
             self._modify_construction_count(suffix, -count)
             if cost <= mincost:
-                mincost = cost
+                mincost       = cost
                 best_splitloc = loc
 
+        # Step 4: If any binary split did better, recurse. Otherwise, this will now be a leaf.
         if best_splitloc:  # => Virtual construction
+            # 4a: Commit this split to the tree.
             self._segmentation_tree[construction] = ConstructionNode(rcount, count, best_splitloc)
             prefix, suffix = self._model.cc.split(construction, best_splitloc)
             self._modify_construction_count(prefix, count)
             self._modify_construction_count(suffix, count)
-            lp = self._recursive_split(prefix)
-            if suffix != prefix:
-                return lp + self._recursive_split(suffix)
-            else:
-                return lp + lp
+
+            # 4b: Recurse.
+            prefix_tokens = self._recursive_split(prefix)
+            suffix_tokens = self._recursive_split(suffix) if suffix != prefix else prefix_tokens  # (small optimisation to not do double work)
+            tokens = prefix_tokens + suffix_tokens
         else:  # => Real construction
             self._segmentation_tree[construction] = ConstructionNode(rcount, 0, None)
             self._modify_construction_count(construction, count)
-            return [construction]
+            tokens = [construction]
+
+        return tokens
 
     def _get_stored_analysis(self, compound: str) -> List[str]:
         """Segment the compound by looking it up in the model analyses.

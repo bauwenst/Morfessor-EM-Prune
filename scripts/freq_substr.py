@@ -2,7 +2,7 @@
 import collections
 import sys
 
-from morfessor.util.utils import SortedCounter
+from morfessor.util.misc import SortedCounter
 
 
 def substrs(seq, min_len=1, max_len=None, prefixes=None):
