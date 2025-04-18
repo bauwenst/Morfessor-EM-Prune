@@ -13,13 +13,14 @@ from .. import get_version
 from . import utils
 from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
-from ..models.baseline import MorfessorBaseline
+from ..models.baseline import MorfessorBaseline, RecursiveSegmenter, FlatteningSegmenter, ViterbiSegmenter
 from ..models.emprune import MorfessorEMPrune
 from .constructions.base import BaseConstructionMethods
 from .exception import ArgumentException
 from .io import MorfessorIO
 from .evaluation import MorfessorEvaluation, EvaluationConfig, \
     WilcoxonSignedRank, FORMAT_STRINGS
+from .criteria import MDLPruningCriterion, AutotunePruningCriterion, LexiconSizePruningCriterion
 
 _logger = logging.getLogger(__name__)
 
@@ -468,15 +469,13 @@ def main(args):
         model = MorfessorBaseline(
             corpusweight=args.corpusweight,
             skip_frequent_reanalysis=args.skips,
-            force_splits=args.forcesplit,
-            nosplit_re=args.nosplit
+            constr_methods=constr_class
         )
     else:
         model = MorfessorEMPrune(
             corpusweight=args.corpusweight,
             skip_frequent_reanalysis=args.skips,
-            force_splits=args.forcesplit,
-            nosplit_re=args.nosplit,
+            constr_methods=constr_class,
 
             seed_strings=args.em_prune,
             nolexcost=args.nolexcost,
@@ -544,15 +543,20 @@ def main(args):
     else:
         raise ArgumentException("unknown dampening type '%s'" % args.dampening)
 
-    # Set algorithm parameters
+    # Construct algorithms
     if len(args.algorithms) == 0:
         args.algorithms.append('recursive')
-    algparams = []
+
+    segmenters = []
     for alg in args.algorithms:
-        if alg == 'viterbi':
-            algparams.append((args.viterbismooth, args.viterbimaxlen))
+        if alg == "recursive":
+            segmenters.append(RecursiveSegmenter())
+        elif alg == "viterbi":
+            segmenters.append(ViterbiSegmenter(args.viterbismooth, args.viterbimaxlen))
+        elif alg == "flatten":
+            segmenters.append(FlatteningSegmenter())
         else:
-            algparams.append(())
+            raise NotImplementedError
 
     # Prep data
     if args.trainmode not in ('none', 'batch'):
@@ -585,10 +589,9 @@ def main(args):
                                 "files. Use 'init+batch' or 'online' to "
                                 "add new compounds.")
             ts = time.time()
-            for alg, algp in zip(args.algorithms, algparams):
-                _logger.info("Batch training with %s algorithm", alg)
-                e, c = model.train_batch(
-                    alg, algp, args.finish_threshold, args.maxepochs)
+            for segmenter in segmenters:
+                _logger.info("Batch training with %s algorithm", segmenter)
+                e, c = model.train_batch(segmenter, args.finish_threshold, args.maxepochs)
                 _logger.info("Epochs: %s", e)
                 _logger.info("Current cost: %s", c)
             te = time.time()
@@ -612,26 +615,21 @@ def main(args):
             if args.prune_criterion == 'lexicon':
                 if args.morphtypes is None:
                     raise Exception('Must specify --num-morph-types')
-                prune_criterion = model.prune_criterion_lexicon_size(
-                    proportion=args.prune_proportion,
-                    goal_lexicon=args.morphtypes)
+                prune_criterion = LexiconSizePruningCriterion(proportion=args.prune_proportion, goal_lexicon=args.morphtypes)
             elif args.prune_criterion == 'mdl':
-                prune_criterion = model.prune_criterion_mdl(
-                    proportion=args.prune_proportion)
+                prune_criterion = MDLPruningCriterion(proportion=args.prune_proportion)
             elif args.prune_criterion == 'autotune':
                 if args.morphtypes is None:
                     raise Exception('Must specify --num-morph-types')
                 initial_lexicon = len(model.cost.counts)
-                prune_proportion = adjust_prune(
-                    initial_lexicon, args.prune_proportion, args.maxepochs, args.morphtypes)
-                prune_criterion = model.prune_criterion_autotune(
-                    proportion=prune_proportion,
-                    goal_lexicon=args.morphtypes)
+                prune_proportion = adjust_prune(initial_lexicon, args.prune_proportion, args.maxepochs, args.morphtypes)
+                prune_criterion = AutotunePruningCriterion(proportion=prune_proportion, goal_lexicon=args.morphtypes)
             else:
                 raise RuntimeError
 
             e, c = model.train_em_prune(
-                prune_criterion,
+                corpus=None,
+                prune_criterion=prune_criterion,
                 max_epochs=args.maxepochs,
                 sub_epochs=args.em_subepochs,
                 expected_freq_threshold=args.expected_freq_threshold,
@@ -642,52 +640,44 @@ def main(args):
             c = model.load_data(data)
         elif args.trainmode == 'init+batch':
             c = model.load_data(data)
-            for alg, algp in zip(args.algorithms, algparams):
-                _logger.info("Batch training with %s algorithm", alg)
-                e, c = model.train_batch(
-                    alg, algp, args.finish_threshold, args.maxepochs)
+            for segmenter in segmenters:
+                _logger.info("Batch training with %s algorithm", segmenter)
+
+                e, c = model.train_batch(segmenter, args.finish_threshold, args.maxepochs)
                 _logger.info("Epochs: %s", e)
                 _logger.info("Current cost: %s", c)
             if args.fullretrain:
-                if abs(model.get_corpus_coding_weight() -
-                       start_corpus_weight) > 0.1:
-                    model.set_corpus_weight_updater(
-                        FixedCorpusWeight(model.get_corpus_coding_weight()))
+                if abs(model.get_corpus_coding_weight() - start_corpus_weight) > 0.1:
+                    model.set_corpus_weight_updater(FixedCorpusWeight(model.get_corpus_coding_weight()))
                     model.clear_segmentations()
-                    for alg, algp in zip(args.algorithms, algparams):
-                        _logger.info("Batch retraining with %s algorithm", alg)
-                        e, c = model.train_batch(
-                            alg, algp, args.finish_threshold, args.maxepochs)
+                    for segmenter in segmenters:
+                        _logger.info("Batch retraining with %s algorithm", segmenter)
+                        e, c = model.train_batch(segmenter, args.finish_threshold, args.maxepochs)
                         _logger.info("Retrain Epochs: %s", e)
                         _logger.info("Current cost: %s", c)
         elif args.trainmode == 'online':
-            if len(args.algorithms) > 1:
+            if len(segmenters) > 1:
                 _logger.warning("On-line training does not support "
                                 "multiple algorithms, consider using "
                                 "'online+batch'")
-            alg, algp = args.algorithms[0], algparams[0]
-            _logger.info("On-line training with %s algorithm", alg)
-            e, c = model.train_online(
-                data, args.epochinterval, alg, algp,
-                args.maxepochs)
+            segmenter = segmenters[0]
+            _logger.info("On-line training with %s algorithm", segmenter)
+            e, c = model.train_online(data, args.epochinterval, algorithm=segmenter, max_epochs=args.maxepochs)
             _logger.info("Epochs: %s", e)
             _logger.info("Current cost: %s", c)
         elif args.trainmode == 'online+batch':
             first = True
-            for alg, algp in zip(args.algorithms, algparams):
+            for segmenter in segmenters:
                 if first:
-                    _logger.info("On-line training with %s algorithm", alg)
-                    e, c = model.train_online(
-                        data, args.epochinterval, alg, algp,
-                        args.maxepochs)
+                    _logger.info("On-line training with %s algorithm", segmenter)
+                    e, c = model.train_online(data, args.epochinterval, algorithm=segmenter, max_epochs=args.maxepochs)
                     _logger.info("Epochs: %s", e)
                     _logger.info("Current cost: %s", c)
                     first = False
                 else:
-                    _logger.info("Batch training with %s algorithm", alg)
-                    e, c = model.train_batch(
-                        alg, algp, args.finish_threshold,
-                        (args.maxepochs - e) if args.maxepochs else None)
+                    _logger.info("Batch training with %s algorithm", segmenter)
+                    e, c = model.train_batch(segmenter, args.finish_threshold,
+                                             (args.maxepochs - e) if args.maxepochs else None)
                     _logger.info("Epochs: %s", e)
                     _logger.info("Current cost: %s", c)
         else:
@@ -742,9 +732,10 @@ def main(args):
                 model, args.sample_nbest,
                 addcount=args.viterbismooth,
                 theta=args.sampling_theta,
-                maxlen=args.viterbimaxlen)
+                maxlen=args.viterbimaxlen
+            )
         else:
-            methodstr =  'viterbi'
+            methodstr = 'viterbi'
         _logger.info("Segmenting test data using %s...", methodstr)
         outformat = args.outputformat
         csep = args.outputformatseparator
