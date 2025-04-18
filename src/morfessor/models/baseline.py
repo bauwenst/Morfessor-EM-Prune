@@ -7,7 +7,7 @@ import random
 import logging
 
 from ._common import _CommonMorfessorBase, DataPoint
-from ..util.utils import _progress
+from ..util.misc import _progress
 
 _logger = logging.getLogger(__name__)
 
@@ -303,7 +303,8 @@ class MorfessorBaseline(_CommonMorfessorBase):
             self._clear_compound_analysis(compound)
             self.tree._set_compound_analysis(compound, [compound])
 
-    def train_batch(self, algorithm: MorfessorBaselineSegmenter=RecursiveSegmenter(),
+    def train_batch(self, # TODO: This should eventually not have to rely on pre-loaded data and instead basically just have the body of load_data as a prefix for the rest of the code.
+                    algorithm: MorfessorBaselineSegmenter=RecursiveSegmenter(),
                     finish_threshold=0.005, max_epochs=None):
         """Train the model in batch fashion.
 
@@ -321,14 +322,16 @@ class MorfessorBaseline(_CommonMorfessorBase):
                                  smaller then finish_threshold * #boundaries
         :param max_epochs: maximum number of epochs to train
         """
-        epochs = 0
+        compounds = list(self.get_compounds())
+
+        # Assuming compounds have been loaded into the model:
+        epochs     = 0
         min_epochs = max(1, self._epoch_update(epochs))
         newcost = self.get_cost()
-        compounds = list(self.get_compounds())
+
         _logger.info(f"Compounds in training data: {len(compounds)} types / {self.cost.compound_tokens()} tokens")
         _logger.info("Starting batch training")
         _logger.info("Epochs: %s\tCost: %s" % (epochs, newcost))
-
         while True:  # Epoch iterator
             random.shuffle(compounds)
             for w in _progress(compounds):

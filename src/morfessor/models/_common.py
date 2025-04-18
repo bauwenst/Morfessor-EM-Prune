@@ -10,12 +10,12 @@ import math
 import numbers
 import random
 
-from ..util.cost import Cost
+from morfessor.loss.cost import Cost
 from ..util.constructions.base import _ConstructionMethods, BaseConstructionMethods
-from ..util.corpus import FixedCorpusWeight
-from ..util.utils import tail, logsumexp, categorical
+from morfessor.loss.corpus import FixedCorpusWeight
+from ..util.misc import tail, logsumexp, categorical
 from ..util.exception import SegmentOnlyModelException
-from ..util.data import DataPoint
+from ..util.data.counting_data import DataPoint
 
 _logger = logging.getLogger(__name__)
 EPS = 1e-8

@@ -6,6 +6,8 @@ from itertools import chain, product
 import math
 import random
 
+from ..models._common import _CommonMorfessorBase
+
 _logger = logging.getLogger(__name__)
 
 EvaluationConfig = collections.namedtuple('EvaluationConfig',
@@ -200,7 +202,7 @@ class MorfessorEvaluation(object):
             cur_len += len(a)
             yield cur_len
 
-    def evaluate_model(self, model, configuration=EvaluationConfig(10, 1000),
+    def evaluate_model(self, model: _CommonMorfessorBase, configuration=EvaluationConfig(10, 1000),
                        meta_data=None):
         """Get the prediction of the test samples from the model and do the
         evaluation

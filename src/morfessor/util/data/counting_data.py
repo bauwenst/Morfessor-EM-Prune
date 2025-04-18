@@ -3,7 +3,7 @@ from collections import Counter, namedtuple
 from dataclasses import dataclass
 from random import random
 
-from .constructions.base import _ConstructionMethods
+from ..constructions.base import _ConstructionMethods
 
 
 @dataclass

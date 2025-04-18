@@ -7,8 +7,8 @@ import logging
 import math
 import re
 
-from .utils import _progress
-from .constructions.base import _ConstructionMethods
+from ..util.misc import _progress
+from morfessor.util.constructions.base import _ConstructionMethods
 
 _logger = logging.getLogger(__name__)
 

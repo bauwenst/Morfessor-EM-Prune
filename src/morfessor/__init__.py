@@ -25,10 +25,8 @@ def get_version():
 # so that the package global names are available to the modules
 # when they are imported.
 
-from .util.utils import _progress
-
 from .util.constructions.base import BaseConstructionMethods
 from .util.constructions.parallel import ParallelConstructionMethods
 from .util.exception import MorfessorException
 
-from .util.cmd import *
+from .cmd import *

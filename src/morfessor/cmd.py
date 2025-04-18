@@ -7,20 +7,20 @@ import sys
 import time
 import string
 
-from .data import freq_threshold, count_modifier, DataPoint, merge_counts, rand_split
+from morfessor.util.data.counting_data import freq_threshold, count_modifier, DataPoint, merge_counts, rand_split
 
-from .. import get_version
-from . import utils
-from .corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
+from morfessor import get_version
+from morfessor.util import misc as utils
+from morfessor.loss.corpus import AnnotationCorpusWeight, MorphLengthCorpusWeight, \
     NumMorphCorpusWeight, FixedCorpusWeight, AlignedTokenCountCorpusWeight
-from ..models.baseline import MorfessorBaseline, RecursiveSegmenter, FlatteningSegmenter, ViterbiSegmenter
-from ..models.emprune import MorfessorEMPrune
-from .constructions.base import BaseConstructionMethods
-from .exception import ArgumentException
-from .io import MorfessorIO
-from .evaluation import MorfessorEvaluation, EvaluationConfig, \
+from morfessor.models.baseline import MorfessorBaseline, RecursiveSegmenter, FlatteningSegmenter, ViterbiSegmenter
+from morfessor.models.emprune import MorfessorEMPrune
+from morfessor.util.constructions.base import BaseConstructionMethods
+from morfessor.util.exception import ArgumentException
+from morfessor.util.data.io import MorfessorIO
+from morfessor.evaluation.evaluation import MorfessorEvaluation, EvaluationConfig, \
     WilcoxonSignedRank, FORMAT_STRINGS
-from .criteria import MDLPruningCriterion, AutotunePruningCriterion, LexiconSizePruningCriterion
+from morfessor.util.emprune.criteria import MDLPruningCriterion, AutotunePruningCriterion, LexiconSizePruningCriterion
 
 _logger = logging.getLogger(__name__)
 
@@ -795,7 +795,7 @@ def main(args):
                                                 clogprob=clogprob))
                 i += 1
                 if i % 10000 == 0:
-                    sys.stderr.write("..")
+                    sys.stderr.write("")
             sys.stderr.write("\n")
         _logger.info("Done.")
 

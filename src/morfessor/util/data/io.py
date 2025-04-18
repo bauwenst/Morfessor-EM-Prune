@@ -8,8 +8,8 @@ import re
 import sys
 from typing import Iterator, Tuple
 
-from .. import get_version
-from . import utils
+from morfessor import get_version
+from ..misc import _is_string
 
 try:
     # In Python2 import cPickle for better performance
@@ -275,8 +275,8 @@ class MorfessorIO(object):
         except BaseException:
             pass
 
-        from ..models.baseline import _CommonMorfessorBase
-        model = _CommonMorfessorBase()
+        from ...models.baseline import MorfessorBaseline
+        model = MorfessorBaseline()
         model.load_segmentations(self.read_segmentation_file(file_name))
         _logger.info("%s was read as a segmentation" % file_name)
         return model
@@ -287,7 +287,7 @@ class MorfessorIO(object):
             csep = self.construction_separator
         if atom_sep is None:
             atom_sep = self.atom_separator
-        if utils._is_string(constructions[0]):
+        if _is_string(constructions[0]):
             # Constructions are strings
             return csep.join(constructions)
         else:
