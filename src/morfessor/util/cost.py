@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Iterable
 from enum import Enum
 import logging
 import numbers
@@ -64,7 +64,7 @@ class Cost:
         self._corpus_coding.weight = current_weight
         return lc, cc
 
-    def update(self, construction, delta):
+    def update(self, construction: str, delta: int):
         if delta == 0:
             return
 
@@ -196,7 +196,7 @@ class EmCost(Cost):
         self.counts = SortedCounter()
         self._cached_tokens = None
 
-    def load_lexicon(self, substr_lexicon):
+    def load_lexicon(self, substr_lexicon: Iterable[Tuple[int,str]]):
         for count, substr in substr_lexicon:
             # only updating on load
             super().update(substr, count)

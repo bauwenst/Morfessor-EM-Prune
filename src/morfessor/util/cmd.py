@@ -478,7 +478,7 @@ def main(args):
             force_splits=args.forcesplit,
             nosplit_re=args.nosplit,
 
-            em_substr=args.em_prune,
+            seed_strings=args.em_prune,
             nolexcost=args.nolexcost,
             freq_distr=args.freq_distr,
         )

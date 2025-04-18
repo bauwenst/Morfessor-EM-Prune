@@ -22,13 +22,6 @@ EPS = 1e-8
 
 
 @dataclass
-class ConstructionNode:
-    rcount: int  # root count (from corpus)
-    count: int  # total count of the node
-    splitloc: Union[int, Tuple[int,...]]  # Location(s) of the possible splits for virtual constructions; empty tuple or 0 if real construction
-
-
-@dataclass
 class SimpleConstrNode:
     count: int
     splitloc: Union[int, Tuple[int,...]]
@@ -52,7 +45,6 @@ class _CommonMorfessorBase(ABC):
     ):
         """Initialize a new model instance.
 
-        Arguments:
         :param corpusweight: weight for the corpus cost
         :param skip_frequent_reanalysis: randomly skip frequently occurring constructions to speed up training.
                 According to the Morfessor 2.0 paper:
@@ -66,18 +58,13 @@ class _CommonMorfessorBase(ABC):
         """
         self.cc = constr_methods
 
-        # For each construction a ConstrNode is stored.
-        #  - All training data has a rcount (real count) > 0.
-        #  - All real morphemes have no split locations.
-        self._tree: Dict[str,ConstructionNode] = {}
-
         # Flag to indicate the mode in which the model is operating
         self._segment_only = False
 
         self._skip_frequent_reanalysis = skip_frequent_reanalysis
         self._analysis_counter = Counter()
 
-        # Semi-supervised data
+        # Semi-supervised data... stored inside the model...
         self._annotations: Dict[str,List[List[str]]] = dict()
 
         # Cost variables
@@ -95,20 +82,43 @@ class _CommonMorfessorBase(ABC):
         else:
             self._corpus_weight_updater = corpus_weight
 
+    ######### This is all data-loading-related and should probably be removed eventually. Makes little sense to store raw data inside any model ever...
+
     def load_data(self, data: Iterable[DataPoint]):
-        """Load data to initialize the model for batch training.
-
-        Arguments:
-            data: iterator of DataPoint tuples
-
-        Adds the compounds in the corpus to the model lexicon. Returns
-        the total cost.
-
+        """
+        Loads a corpus of word-count pairs into the model.
+        Returns the total cost.
         """
         self._assert_not_restricted()
         for dp in data:
             self._load_compound(dp)
         return self.get_cost()
+
+    @abstractmethod
+    def _load_compound(self, dp: DataPoint):
+        pass
+
+    def load_annotations(self, annotations: Dict[str,List[List[str]]], annotationweight: float):
+        self._annotations = annotations
+        self.cost.set_annot_coding_weight(annotationweight)
+        self._update_annotation_choices()
+        self.cost._annot_coding.update_weight()
+
+    @abstractmethod
+    def _get_corpus_frequency(self, compound: str) -> int:
+        pass
+
+    @abstractmethod
+    def get_compounds(self) -> Iterable[str]:
+        """Recall the compound types (i.e. words) the user loaded into the model."""
+        pass
+
+    @abstractmethod
+    def get_compound_counts(self) -> Iterable[Tuple[str,int]]:
+        """Recall the compound types (i.e. words) and frequencies the user loaded into the model."""
+        pass
+
+    #######################################################
 
     @property
     def tokens(self):
@@ -140,12 +150,12 @@ class _CommonMorfessorBase(ABC):
         # and add missing compounds also to the unannotated data
         constructions = Counter()
         for compound, alternatives in self._annotations.items():
-            if compound not in self._tree:
+            if not self._seen_compound(compound):
                 self._add_compound(compound, 1)
 
             analysis, cost = self._best_analysis(alternatives)
             for m in analysis:
-                constructions[m] += self._tree[compound].rcount
+                constructions[m] += self._get_corpus_frequency(compound)
 
         # Apply the selected constructions in annotated corpus coding
         self.cost.set_annot_constructions(constructions)
@@ -171,12 +181,12 @@ class _CommonMorfessorBase(ABC):
         return bestanalysis, bestcost
 
     @abstractmethod
-    def _add_compound(self, compound: str, c: int):
+    def _add_compound(self, compound: str, count: int):
         """Add compound with count c to data."""
         pass
 
     @abstractmethod
-    def _load_compound(self, dp: DataPoint):
+    def _seen_compound(self, compound: str) -> bool:
         pass
 
     def _clear_compound_analysis(self, compound: str):  # TODO [Bauwens]: Why is this implementation empty? Are we sure it shouldn't be like the body of self.clear_segmentations()?
@@ -187,7 +197,11 @@ class _CommonMorfessorBase(ABC):
         """Return (real) count of the construction."""
         return self.cost.counts.get(construction, 0)
 
-    def _do_skip_analysis(self, construction):
+    def get_cost(self) -> float:
+        """Return current model encoding cost."""
+        return sum(self.cost.cost())
+
+    def _do_skip_analysis(self, construction: str) -> bool:
         """Return true if construction should be skipped."""
         if construction in self._analysis_counter:
             if random.random() > 1.0 / max(1,self._analysis_counter[construction]):
@@ -195,44 +209,15 @@ class _CommonMorfessorBase(ABC):
         self._analysis_counter[construction] += 1
         return False
 
-    def get_compounds(self):
-        """Return the compound types stored by the model."""
+    def get_pseudomodel(self, viterbismooth, viterbimaxlen):  # TODO [Bauwens]: Is this relevant to have for Morfessor Baseline? Does the tree consist of (recursive) Viterbi splits, or not?
+        """
+        Use the trained model to segment the training data.
+        The resulting segmentations can be interpreted as if they are a Morfessor Baseline model.
+        """
         self._assert_not_restricted()
-        return [w
-                for w, node in self._tree.items()
-                if node.rcount > 0]
-
-    def get_compound_counts(self):
-        """Return the compound types stored by the model."""
-        self._assert_not_restricted()
-        return [(word, node.rcount)
-                for word, node in self._tree.items()
-                if node.rcount > 0]
-
-    def get_constructions(self):
-        """Return a list of the present constructions and their counts."""
-        return sorted((word, node.count)
-                      for word, node in self._tree.items()
-                      if not node.splitloc)
-
-    def get_cost(self) -> float:
-        """Return current model encoding cost."""
-        return sum(self.cost.cost())
-
-    def get_pseudomodel(self, viterbismooth, viterbimaxlen):
-        self._assert_not_restricted()
-        for w in sorted(self._tree.keys()):
-            node = self._tree[w]
-            if node.rcount == 0:
-                continue
-            constructions, _ = self.viterbi_segment(w, viterbismooth, viterbimaxlen)
-            yield (node.rcount, w, constructions)
-
-    def load_annotations(self, annotations: Dict[str,List[List[str]]], annotationweight: float):
-        self._annotations = annotations
-        self.cost.set_annot_coding_weight(annotationweight)
-        self._update_annotation_choices()
-        self.cost._annot_coding.update_weight()
+        for word, rcount in sorted(self.get_compound_counts()):
+            constructions, _ = self.viterbi_segment(word, viterbismooth, viterbimaxlen)
+            yield rcount, word, constructions
 
     def _getViterbiBoundaryCost(self) -> float:
         return math.log(self.cost.tokens() + self.cost.compound_tokens()) \

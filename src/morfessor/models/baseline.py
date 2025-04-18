@@ -1,14 +1,22 @@
 from abc import ABC, abstractmethod
-from typing import List, Iterable, Tuple
+from typing import List, Iterable, Tuple, Dict, Union, Iterator
 from collections import Counter
+from dataclasses import dataclass
 
 import random
 import logging
 
-from ._common import _CommonMorfessorBase, ConstructionNode, DataPoint
+from ._common import _CommonMorfessorBase, DataPoint
 from ..util.utils import _progress
 
 _logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ConstructionNode:
+    rcount: int  # root count (from corpus); [Bauwens] From what I gather, the difference between the two counts is that `count` can go up or down depending on the structure of the Morfessor tree, whilst `rcount` is the "observed" count of the type in real text.
+    count: int  # total count of the node
+    splitloc: Union[int, Tuple[int,...]]  # Location(s) of the possible splits for virtual constructions; empty tuple or 0 if real construction
 
 
 class MorfessorBaselineSegmenter(ABC):
@@ -32,13 +40,15 @@ class ViterbiSegmenter(MorfessorBaselineSegmenter):
 
     def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
         if model._skip_frequent_reanalysis and model._do_skip_analysis(compound):
-            return model._get_stored_analysis(compound)
+            return model.tree._get_stored_analysis(compound)
 
-        # Use Viterbi algorithm to optimize the subsegments
+        pretokens = model.cc.splitn(compound, model.cc.force_split_locations(compound))
         constructions = []
-        for part in model.cc.splitn(compound, model.cc.force_split_locations(compound)):
-            constructions.extend(model.viterbi_segment(part, addcount=self._addcount, maxlen=self._maxlen)[0])
-        model._set_compound_analysis(compound, constructions)
+        for pretoken in pretokens:
+            constructions.extend(model.viterbi_segment(pretoken, addcount=self._addcount, maxlen=self._maxlen)[0])
+
+        # Store the resulting segmentation.
+        model.tree._set_compound_analysis(compound, constructions)
         return constructions
 
 
@@ -48,29 +58,185 @@ class RecursiveSegmenter(MorfessorBaselineSegmenter):
     """
 
     def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:  # TODO: Possibly you want to put this _recursive_split into this class.
-        # if self._use_skips and self._test_skip(compound):
-        #     return self.segment(compound)
-        # Collect forced subsegments
+        # if model._skip_frequent_reanalysis and model._do_skip_analysis(compound):
+        #     return model.tree._get_stored_analysis(compound)
 
-        parts = list(model.cc.splitn(compound, model.cc.force_split_locations(compound)))
-        if len(parts) == 1:
-            return model._recursive_split(compound)
+        # Collect forced subsegments (a.k.a. pretokens)
+        pretokens = list(model.cc.splitn(compound, model.cc.force_split_locations(compound)))
+        if len(pretokens) > 1:
+            model.tree._set_compound_analysis(compound, pretokens)
 
-        model._set_compound_analysis(compound, parts)
-        # Use recursive algorithm to optimize the subsegments
+        # For each pretoken, apply _recursive_split.
         constructions = []
-        for part in parts:
-            constructions += model._recursive_split(part)
+        for pretoken in pretokens:
+            constructions += model.tree._recursive_split(pretoken)
         return constructions
 
 
 class FlatteningSegmenter(MorfessorBaselineSegmenter):
 
     def segment(self, model: "MorfessorBaseline", compound: str) -> List[str]:
-        segments = model._get_stored_analysis(compound)
+        segments = model.tree._get_stored_analysis(compound)
         model._clear_compound_analysis(compound)
-        model._set_compound_analysis(compound, segments)
+        model.tree._set_compound_analysis(compound, segments)
         return segments
+
+
+class MorfessorTree:
+
+    def __init__(self, model: "MorfessorBaseline"):
+        # For each construction a ConstrNode is stored.
+        #  - All training data has a rcount (real count) > 0.
+        #  - All real morphemes have no split locations.
+        self._segmentation_tree: Dict[str, ConstructionNode] = {}
+        self._model = model  # TODO: Ideally there wouldn't be a bidirectional association, but there is right now because we need access to model.cost 3 times.
+
+    def _add(self, compound: str, count: int):
+        self._segmentation_tree[compound].rcount += count
+
+    def _remove(self, construction: str) -> Tuple[int,int]:
+        """Remove construction from model."""
+        node = self._segmentation_tree[construction]
+        rcount, count = node.rcount, node.count
+        self._modify_construction_count(construction, -count)
+        return rcount, count
+
+    def _set_compound_analysis(self, compound: str, parts):
+        """Set analysis of compound to according to given segmentation.
+
+        Arguments:
+            compound: compound to split
+            parts: desired constructions of the compound
+
+        """
+        parts = list(parts)
+        if len(parts) == 1:
+            rcount, count = self._remove(compound)
+            self._segmentation_tree[compound] = ConstructionNode(rcount, 0, tuple())
+            self._modify_construction_count(compound, count)
+        else:
+            rcount, count = self._remove(compound)
+
+            splitloc = tuple(self._model.cc.parts_to_splitlocs(parts))
+            self._segmentation_tree[compound] = ConstructionNode(rcount, count, splitloc)
+            for constr in parts:
+                self._modify_construction_count(constr, count)
+
+    def _modify_construction_count(self, construction: str, delta_count: int):
+        """Modify the count of construction by dcount.
+
+        For virtual constructions, recurses to child nodes in the
+        tree. For real constructions, adds/removes construction
+        to/from the lexicon whenever necessary.
+        """
+        if delta_count == 0 or construction is None:
+            return
+
+        if construction in self._segmentation_tree:
+            node = self._segmentation_tree[construction]
+            rcount, count, splitloc = node.rcount, node.count, node.splitloc
+        else:
+            rcount, count, splitloc = 0, 0, None
+
+        count += delta_count
+        if count == 0:  # Note: this comparison may not work correctly if counts are floats rather than ints.
+            if construction in self._segmentation_tree:
+                self._segmentation_tree.pop(construction)
+        else:
+            self._segmentation_tree[construction] = ConstructionNode(rcount, count, splitloc)
+
+        if splitloc:  # => Virtual construction
+            for child in self._model.cc.splitn(construction, splitloc):
+                self._modify_construction_count(child, delta_count)
+        else:
+            self._model.cost.update(construction, delta_count)  # Real construction
+
+    def _recursive_split(self, construction: str):
+        """
+        Optimize segmentation of the construction by recursive splitting.
+        Returns list of segments.
+        
+        This is the algorithm described on page 15 of this paper: https://users.ics.aalto.fi/mcreutz/papers/Creutz05tr.pdf
+        Refactored into symbols in algorithm 2.4 of this thesis: https://bauwenst.github.io/cdn/doc/pdf/2023/masterthesis.pdf
+        """
+        # if self._use_skips and self._test_skip(construction):
+        #     return self.segment(construction)
+        rcount, count = self._remove(construction)
+
+        # Check all binary splits and no split
+        self._modify_construction_count(construction, count)
+        mincost = self._model.get_cost()
+        self._modify_construction_count(construction, -count)
+
+        best_splitloc = None
+
+        for loc in self._model.cc.split_locations(construction):
+            prefix, suffix = self._model.cc.split(construction, loc)
+            self._modify_construction_count(prefix, count)
+            self._modify_construction_count(suffix, count)
+            cost = self._model.get_cost()
+            self._modify_construction_count(prefix, -count)
+            self._modify_construction_count(suffix, -count)
+            if cost <= mincost:
+                mincost = cost
+                best_splitloc = loc
+
+        if best_splitloc:  # => Virtual construction
+            self._segmentation_tree[construction] = ConstructionNode(rcount, count, best_splitloc)
+            prefix, suffix = self._model.cc.split(construction, best_splitloc)
+            self._modify_construction_count(prefix, count)
+            self._modify_construction_count(suffix, count)
+            lp = self._recursive_split(prefix)
+            if suffix != prefix:
+                return lp + self._recursive_split(suffix)
+            else:
+                return lp + lp
+        else:  # => Real construction
+            self._segmentation_tree[construction] = ConstructionNode(rcount, 0, None)
+            self._modify_construction_count(construction, count)
+            return [construction]
+
+    def _get_stored_analysis(self, compound: str) -> List[str]:
+        """Segment the compound by looking it up in the model analyses.
+
+        Raises KeyError if compound is not present in the training
+        data. For segmenting new words, use viterbi_segment(compound).
+        """
+        splitloc = self._segmentation_tree[compound].splitloc
+        constructions = []
+        if splitloc:
+            for part in self._model.cc.splitn(compound, splitloc):
+                constructions += self._get_stored_analysis(part)
+        else:
+            constructions.append(compound)
+
+        return constructions
+
+    def get_segmentations(self) -> Iterator[Tuple[int,str,List[str]]]:
+        """Retrieve segmentations for all compounds encoded by the model.
+
+           [Bauwens] To clarify: the Morfessor tree stores both fictitious types and types that were observed in a
+           corpus. They are distinguished by having an "rcount" (count in a real corpus) versus not having one. This
+           particular method is basically asking "please tokenise the words that the corpus put into the model"."""
+        for w in sorted(self._segmentation_tree.keys()):
+            c = self._segmentation_tree[w].rcount
+            if c > 0:
+                yield c, w, self._get_stored_analysis(w)
+
+    def get_leaves(self) -> List[Tuple[str,int]]:
+        return [(word, node.count)
+                for word, node in self._segmentation_tree.items()
+                if not node.splitloc]  # If the node is not split, it's a leaf, i.e. a "non-virtual construction".
+
+    def freeze_leaves(self):
+        """
+        Reduce the size of this model by removing all non-morphs from the
+        analyses. After calling this method it is not possible anymore to call
+        any other method that would change the state of the model. Anyway
+        doing so would throw an exception.
+        """
+        self._segmentation_tree = {k: v for (k, v) in self._segmentation_tree.items()
+                                   if not v.splitloc}
 
 
 class MorfessorBaseline(_CommonMorfessorBase):
@@ -82,66 +248,60 @@ class MorfessorBaseline(_CommonMorfessorBase):
     that they can be moved back to the parent class.
     """
 
+    def __init__(self, corpusweight, skip_frequent_reanalysis, constr_methods):
+        super().__init__(corpusweight=corpusweight, skip_frequent_reanalysis=skip_frequent_reanalysis, constr_methods=constr_methods)
+        self.tree = MorfessorTree(self)
+
     # FIXME [Grönroos]: refactor?
     def load_segmentations(self, segmentations: Iterable[Tuple[int,str,List[str]]]):
         for count, compound, constructions in segmentations:
             splitlocs = tuple(self.cc.parts_to_splitlocs(constructions))
             self._add_compound(compound, count)
             self._clear_compound_analysis(compound)
-            self._set_compound_analysis(compound, self.cc.splitn(compound, splitlocs))
+            self.tree._set_compound_analysis(compound, self.cc.splitn(compound, splitlocs))
         return self.get_cost()
 
-    def _add_compound(self, compound: str, c: int):
-        self.cost.update_boundaries(compound, c)
-        self._modify_construction_count(compound, c)
-        self._tree[compound].rcount += c
+    def _add_compound(self, compound: str, count: int):
+        self.cost.update_boundaries(compound, count)
+        self.tree._modify_construction_count(compound, count)
+        self.tree._add(compound, count)
 
     def _load_compound(self, dp: DataPoint):
         self._add_compound(dp.compound, dp.count)
 
         self._clear_compound_analysis(dp.compound)
-        self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+        self.tree._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+
+    def _seen_compound(self, compound: str) -> bool:
+        return compound in self.tree._segmentation_tree
+
+    def _get_corpus_frequency(self, compound: str) -> int:
+        return self.tree._segmentation_tree[compound].rcount
 
     def make_segment_only(self):
-        """Reduce the size of this model by removing all non-morphs from the
-        analyses. After calling this method it is not possible anymore to call
-        any other method that would change the state of the model. Anyway
-        doing so would throw an exception.
-
-        """
-        #self._num_compounds = len(self.get_compounds())
         self._segment_only = True
+        self.tree.freeze_leaves()
 
-        self._tree = {k: v for (k, v) in self._tree.items()
-                      if not v.splitloc}
+    def get_constructions(self):
+        """Return a list of the non-virtual constructions and their counts."""
+        return self.tree.get_leaves()
 
-    def _remove(self, construction: str) -> Tuple[int,int]:
-        """Remove construction from model."""
-        node = self._tree[construction]
-        rcount, count = node.rcount, node.count
-        self._modify_construction_count(construction, -count)
-        return rcount, count
+    def get_compounds(self):
+        self._assert_not_restricted()
+        return [word
+                for word, node in self.tree._segmentation_tree.items()
+                if node.rcount > 0]  # Note that having a raw corpus count is not the same as being virtual/non-virtual. The nodes in the tree can or cannot appear in the corpus. Here we ask for the ones that do.
+
+    def get_compound_counts(self):
+        self._assert_not_restricted()
+        return [(word, node.rcount)
+                for word, node in self.tree._segmentation_tree.items()
+                if node.rcount > 0]
 
     def clear_segmentations(self):
         for compound in self.get_compounds():
             self._clear_compound_analysis(compound)
-            self._set_compound_analysis(compound, [compound])
-
-    def _get_stored_analysis(self, compound: str) -> List[str]:
-        """Segment the compound by looking it up in the model analyses.
-
-        Raises KeyError if compound is not present in the training
-        data. For segmenting new words, use viterbi_segment(compound).
-        """
-        _, _, splitloc = self._tree[compound]
-        constructions = []
-        if splitloc:
-            for part in self.cc.splitn(compound, splitloc):
-                constructions += self._get_stored_analysis(part)
-        else:
-            constructions.append(compound)
-
-        return constructions
+            self.tree._set_compound_analysis(compound, [compound])
 
     def train_batch(self, algorithm: MorfessorBaselineSegmenter=RecursiveSegmenter(),
                     finish_threshold=0.005, max_epochs=None):
@@ -258,7 +418,7 @@ class MorfessorBaseline(_CommonMorfessorBase):
 
                 self._add_compound(dp.compound, dp.count)
                 self._clear_compound_analysis(dp.compound)
-                self._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
+                self.tree._set_compound_analysis(dp.compound, self.cc.splitn(dp.compound, dp.splitlocs))
 
                 segments = algorithm.segment(self, dp.compound)
                 _logger.debug(f"#{i}: {dp.compound} -> {' + '.join(self.cc.to_string(s) for s in segments)}")
@@ -306,106 +466,3 @@ class MorfessorBaseline(_CommonMorfessorBase):
             self.cost._annot_coding.update_weight()
 
         return forced_epochs
-
-    def _set_compound_analysis(self, compound: str, parts):
-        """Set analysis of compound to according to given segmentation.
-
-        Arguments:
-            compound: compound to split
-            parts: desired constructions of the compound
-
-        """
-        parts = list(parts)
-        if len(parts) == 1:
-            rcount, count = self._remove(compound)
-            self._tree[compound] = ConstructionNode(rcount, 0, tuple())
-            self._modify_construction_count(compound, count)
-        else:
-            rcount, count = self._remove(compound)
-
-            splitloc = tuple(self.cc.parts_to_splitlocs(parts))
-            self._tree[compound] = ConstructionNode(rcount, count, splitloc)
-            for constr in parts:
-                self._modify_construction_count(constr, count)
-
-    def _modify_construction_count(self, construction: str, dcount: int):
-        """Modify the count of construction by dcount.
-
-        For virtual constructions, recurses to child nodes in the
-        tree. For real constructions, adds/removes construction
-        to/from the lexicon whenever necessary.
-
-        """
-        if dcount == 0 or construction is None:
-            return
-        if construction in self._tree:
-            node = self._tree[construction]
-            rcount, count, splitloc = node.rcount, node.count, node.splitloc
-        else:
-            rcount, count, splitloc = 0, 0, None
-        newcount = count + dcount
-        # observe that this comparison will not work correctly if counts
-        # are floats rather than ints
-        if newcount == 0:
-            if construction in self._tree:
-                del self._tree[construction]
-        else:
-            self._tree[construction] = ConstructionNode(rcount, newcount, splitloc)
-        if splitloc:
-            # Virtual construction
-            for child in self.cc.splitn(construction, splitloc):
-                self._modify_construction_count(child, dcount)
-        else:
-            self.cost.update(construction, newcount - count)  # Real construction
-
-    def get_segmentations(self):
-        """Retrieve segmentations for all compounds encoded by the model."""
-        for w in sorted(self._tree.keys()):
-            c = self._tree[w].rcount
-            if c > 0:
-                yield c, w, self._get_stored_analysis(w)
-
-    def _recursive_split(self, construction: str):
-        """Optimize segmentation of the construction by recursive splitting.
-
-        Returns list of segments.
-
-        """
-        # if self._use_skips and self._test_skip(construction):
-        #     return self.segment(construction)
-        rcount, count = self._remove(construction)
-
-        # Check all binary splits and no split
-        self._modify_construction_count(construction, count)
-        mincost = self.get_cost()
-        self._modify_construction_count(construction, -count)
-
-        best_splitloc = None
-
-        for loc in self.cc.split_locations(construction):
-            prefix, suffix = self.cc.split(construction, loc)
-            self._modify_construction_count(prefix, count)
-            self._modify_construction_count(suffix, count)
-            cost = self.get_cost()
-            self._modify_construction_count(prefix, -count)
-            self._modify_construction_count(suffix, -count)
-            if cost <= mincost:
-                mincost = cost
-                best_splitloc = loc
-
-        if best_splitloc:
-            # Virtual construction
-            self._tree[construction] = ConstructionNode(rcount, count, best_splitloc)
-            prefix, suffix = self.cc.split(construction, best_splitloc)
-            self._modify_construction_count(prefix, count)
-            self._modify_construction_count(suffix, count)
-            lp = self._recursive_split(prefix)
-            if suffix != prefix:
-                return lp + self._recursive_split(suffix)
-            else:
-                return lp + lp
-        else:
-            # Real construction
-            self._tree[construction] = ConstructionNode(rcount, 0, None)
-            self._modify_construction_count(construction, count)
-            return [construction]

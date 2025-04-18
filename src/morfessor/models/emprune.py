@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Iterable, Optional
 from enum import Enum
 from collections import Counter
 
@@ -8,7 +8,8 @@ import itertools
 from copy import deepcopy
 from scipy.special import digamma
 
-from .baseline import _CommonMorfessorBase, ConstructionNode, DataPoint, EPS
+from ._common import EPS, _CommonMorfessorBase
+from .baseline import ConstructionNode, DataPoint
 from ..util.cost import FrequencyDistributionMode, EmCost
 from ..util.criteria import PruneStats, PruneDecision, PruningCriterion, prune_cost_at_alpha, AutotunePruningCriterion
 from ..util.utils import tail, logsumexp
@@ -25,34 +26,33 @@ class LateenMode(Enum):
 class MorfessorEMPrune(_CommonMorfessorBase):
     def __init__(self,
                  corpusweight, skip_frequent_reanalysis, constr_methods,
-                 em_substr=None,
+                 seed_strings: Iterable[Tuple[int,str]]=None,
                  nolexcost: bool=False,
                  freq_distr: FrequencyDistributionMode=FrequencyDistributionMode.BASELINE):
         """
         :param nolexcost: ignore lexicon cost with EM+prune
-        :param em_substr: substring lexicon
+        :param seed_strings: substring set to prune from
         :param freq_distr: ?
         """
         super().__init__(corpusweight=corpusweight, skip_frequent_reanalysis=skip_frequent_reanalysis, constr_methods=constr_methods)
+        self._stored_corpus = Counter()
 
         self.cost = EmCost(self.cc, corpusweight, nolexcost, freq_distr)
-        self.cost.load_lexicon(em_substr)
+        self.cost.load_lexicon(seed_strings)
 
-    def e_step_soft(self, maxlen: int):
+    def e_step_soft(self, raw_words: Counter[str], maxlen: int):
         expected = Counter()
-        compounds = list(self.get_compound_counts())
         tot_cost = 0
-        for compound, freq in compounds:
+        for compound, freq in raw_words.items():
             w_expected, cost = self._forward_backward(compound, freq, maxlen)
             expected.update(w_expected)
             tot_cost += cost
         return expected, tot_cost
 
-    def e_step_hard(self, maxlen: int) -> Tuple[Counter[str],float]:
+    def e_step_hard(self, raw_words: Counter[str], maxlen: int) -> Tuple[Counter[str],float]:
         expected = Counter()
-        compounds = list(self.get_compound_counts())
         tot_cost = 0
-        for compound, freq in compounds:
+        for compound, freq in raw_words.items():
             constructions, cost = self.viterbi_segment(compound, addcount=0.0, maxlen=maxlen)
             for cons in constructions:
                 expected[cons] += freq
@@ -114,7 +114,7 @@ class MorfessorEMPrune(_CommonMorfessorBase):
 
         return self.get_cost(), done
 
-    def compute_prune_stats(self):
+    def compute_prune_stats(self) -> Iterable[PruneStats]:
         orig_lc, orig_cc = self.cost.cost_before_tuning()
         constructions = list(w for w, c in self.cost.counts.most_common())
         current_alpha = self.get_corpus_coding_weight()
@@ -153,10 +153,19 @@ class MorfessorEMPrune(_CommonMorfessorBase):
                              delta_lc, delta_cc,
                              delta_cost, decision)
 
-    def train_em_prune(self, prune_criterion: PruningCriterion,
+    def train_em_prune(self,
+                       corpus: Optional[Iterable[Tuple[str,int]]],
+                       prune_criterion: PruningCriterion,
                        max_epochs: int=5, sub_epochs: int=3,
                        expected_freq_threshold: float=0.5,
                        maxlen: int=30, lateen: LateenMode=LateenMode.NONE, noexpdigamma: bool=False):
+        """
+        Run Morfessor EM+Prune training on the given corpus.
+
+        TODO: The result of this process should be a set of unigrams with probabilities to be used for Viterbi segmentation.
+              As far as I can see, self.cost.counts is what you actually want.
+        """
+        corpus = Counter(dict(corpus)) if corpus is not None else self._stored_corpus
         done = False
         epoch = 0
         while epoch < max_epochs:
@@ -165,9 +174,9 @@ class MorfessorEMPrune(_CommonMorfessorBase):
                 # E-step
                 if lateen == LateenMode.FULL and sub_epoch == sub_epochs - 1:
                     _logger.info("Lateen EM: using Viterbi e-step")
-                    expected, cost = self.e_step_hard(maxlen=maxlen)
+                    expected, cost = self.e_step_hard(corpus, maxlen=maxlen)
                 else:
-                    expected, cost = self.e_step_soft(maxlen=maxlen)
+                    expected, cost = self.e_step_soft(corpus, maxlen=maxlen)
                 _logger.info("E-step cost: %s tokens: %s" % (cost, self.cost.all_tokens()))
 
                 # Optionally add semi-supervision to the results of the E-step
@@ -278,9 +287,18 @@ class MorfessorEMPrune(_CommonMorfessorBase):
     def _getViterbiBoundaryCost(self) -> float:
         return 0.0
 
-    def _add_compound(self, compound: str, c: int):
-        self.cost.update_boundaries(compound, c)
-        self._tree[compound] = ConstructionNode(rcount=c, count=c, splitloc=tuple())
+    def _add_compound(self, compound: str, count: int):
+        self.cost.update_boundaries(compound, count)
+        self._stored_corpus[compound] += count
 
     def _load_compound(self, dp: DataPoint):
         self._add_compound(dp.compound, dp.count)
+
+    def _get_corpus_frequency(self, compound: str) -> int:
+        return self._stored_corpus[compound]
+
+    def get_compounds(self) -> Iterable[str]:
+        return self._stored_corpus.keys()
+
+    def get_compound_counts(self) -> Iterable[Tuple[str,int]]:
+        return self._stored_corpus.items()

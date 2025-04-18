@@ -539,8 +539,8 @@ class AnnotationCorpusWeight(CorpusWeight):
 
 
 class MorphLengthCorpusWeight(CorpusWeight):
-    def __init__(self, morph_lenght, threshold=0.01):
-        self.morph_length = morph_lenght
+    def __init__(self, morph_length, threshold=0.01):
+        self.morph_length = morph_length
         self.threshold = threshold
 
     def update(self, model, epoch: int):
@@ -583,7 +583,6 @@ class NumMorphCorpusWeight(CorpusWeight):
         _logger.info("Number of morph types: {}".format(cur_morph_types))
 
         if abs(self.num_morph_types - cur_morph_types) / self.num_morph_types > self.threshold:
-            d = (abs(self.num_morph_types - cur_morph_types) /
-                 (self.num_morph_types - cur_morph_types))
+            d = abs(self.num_morph_types - cur_morph_types) / (self.num_morph_types - cur_morph_types)
             return self.move_direction(model, d, epoch)
         return False
