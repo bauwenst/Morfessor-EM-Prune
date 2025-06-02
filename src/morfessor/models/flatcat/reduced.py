@@ -13,7 +13,8 @@ import sys
 
 from .categorizationscheme import ByCategory, get_categories, CategorizedMorph
 from .categorizationscheme import MorphUsageProperties
-from .flatcat import AbstractSegmenter, FlatcatAnnotatedCorpusEncoding
+from . import AbstractSegmenter
+from ...loss.flatcat.encoding import FlatcatAnnotatedCorpusEncoding
 from .utils import LOGPROB_ZERO, zlog
 
 _logger = logging.getLogger(__name__)

@@ -29,8 +29,9 @@ def get_version(numeric=False):
 # so that the package global names are available to the modules
 # when they are imported.
 
-from .flatcat import FlatcatModel, AbstractSegmenter
-from .flatcat import FlatcatAnnotatedCorpusEncoding
+from .flatcat import FlatcatModel
+from ._common import AbstractSegmenter
+from ...loss.flatcat.encoding import FlatcatAnnotatedCorpusEncoding
 from .categorizationscheme import MorphUsageProperties, HeuristicPostprocessor
 from .categorizationscheme import WORD_BOUNDARY, CategorizedMorph
 from .cmd import flatcat_main, get_flatcat_argparser

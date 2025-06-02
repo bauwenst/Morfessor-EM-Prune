@@ -56,7 +56,6 @@ def _load_flatcat(baseline_seg, init='full'):
                     emission counts and category totals.
                     (Default: full init)
         """
-
         m_usage = flatcat.MorphUsageProperties(ppl_threshold=10, ppl_slope=1,
                                               length_threshold=3,
                                               length_slope=2,

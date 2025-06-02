@@ -1,13 +1,13 @@
 # Morfessor EM+Prune
-Below is the README from the repo which this is a fork for, but formatted properly. 
-
-## Installation
-Morfessor 2.0 is installed using setuptools library for Python. To
-build and install the module and scripts to default paths, type
-```shell
-python setup.py install
+To install this repo, clone it to your machine and then run
 ```
-For details, see http://docs.python.org/install/
+pip install .
+```
+which will use the included `pyproject.toml` file.
+
+---
+
+Below is the README from the repo which this is a fork for, but formatted properly.
 
 ## Documentation
 User instructions for Morfessor 2.0 are available in the docs directory
