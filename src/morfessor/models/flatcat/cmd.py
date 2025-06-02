@@ -15,7 +15,7 @@ from morfessor.io import MorfessorIO
 from . import get_version, _logger, flatcat, reduced
 from . import categorizationscheme, utils
 from .diagnostics import IterationStatistics
-from .exception import ArgumentException
+from ...util.exception import ArgumentException
 from .io import FlatcatIO, TarGzModel, BINARY_ENDINGS, TARBALL_ENDINGS
 from .utils import _generator_progress
 

@@ -129,72 +129,6 @@ class Sparse(dict):
             dict.__setitem__(self, key, value)
 
 
-def ngrams(sequence, n=2):
-    """Returns all ngram tokens in an input sequence, for a specified n.
-    E.g. ngrams(['A', 'B', 'A', 'B', 'D'], n=2) yields
-    ('A', 'B'), ('B', 'A'), ('A', 'B'), ('B', 'D')
-    """
-
-    window = []
-    for item in sequence:
-        window.append(item)
-        if len(window) > n:
-            # trim back to size
-            window = window[-n:]
-        if len(window) == n:
-            yield(tuple(window))
-
-
-def minargmin(sequence):
-    """Returns the minimum value and the first index at which it can be
-    found in the input sequence."""
-    best = (None, None)
-    for (i, value) in enumerate(sequence):
-        if best[0] is None or value < best[0]:
-            best = (value, i)
-    return best
-
-
-def zlog(x):
-    """Logarithm which uses constant value for log(0) instead of -inf"""
-    assert x >= 0.0
-    if x == 0:
-        return LOGPROB_ZERO
-    return -math.log(x)
-
-
-def _nt_zeros(constructor, zero=0):
-    """Convenience function to return a namedtuple initialized to zeros,
-    without needing to know the number of fields."""
-    zeros = [zero] * len(constructor._fields)
-    return constructor(*zeros)
-
-
-def weighted_sample(data, num_samples):
-    """Samples with replacement from the data set so that the probability
-    of each data point being selected is proportional to the occurrence count.
-    Arguments:
-        data: A list of tuples (weight, ...)
-        num_samples: The number of samples to return
-    Returns:
-        a sorted list of indices to data
-    """
-    tokens = sum(x[0] for x in data)
-    token_indices = sorted([random.randint(0, tokens - 1)
-                            for _ in range(num_samples)])
-
-    data_indices = []
-    d = enumerate(x[0] for x in data)
-    di = 0
-    ti = -1
-    for sample_token_index in token_indices:
-        while ti < sample_token_index:
-            (di, weight) = next(d)
-            ti += weight
-        data_indices.append(di)
-    return data_indices
-
-
 def _generator_progress(generator, freq=None):
     """Prints a progress bar for visualizing flow through a generator.
     The length of a generator is not known in advance, so the bar has
@@ -216,10 +150,3 @@ def _generator_progress(generator, freq=None):
         sys.stderr.write('\n')
 
     return _progress_wrapper(generator)
-
-
-def _is_string(obj):
-    try:
-        return isinstance(obj, basestring)
-    except NameError:
-        return isinstance(obj, str)

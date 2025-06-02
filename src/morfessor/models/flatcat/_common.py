@@ -3,11 +3,10 @@ from __future__ import unicode_literals
 import math
 import re
 
-from src.morfessor.models.flatcat import WORD_BOUNDARY, CategorizedMorph, MorphUsageProperties, utils
-from src.morfessor.models.flatcat.categorizationscheme import get_categories, DEFAULT_CATEGORY
-from src.morfessor.models.flatcat.flatcat import AnalysisAlternative, ViterbiNode, _wb_wrap, CostBreakdown, \
+from .flatcat import WORD_BOUNDARY, CategorizedMorph, MorphUsageProperties, utils, AnalysisAlternative, ViterbiNode, _wb_wrap, CostBreakdown, \
     SortedAnalysis
-from src.morfessor.models.flatcat.utils import _is_string, LOGPROB_ZERO
+from .categorizationscheme import get_categories, DEFAULT_CATEGORY
+from .utils import _is_string, LOGPROB_ZERO
 
 
 class AbstractSegmenter(object):
