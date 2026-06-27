@@ -1,11 +1,12 @@
-import collections
+"""
+From the FlatCat repo. Possibly this even belongs under tests or under scripts.
+"""
 import logging
 import time
-import sys
+
+from ..misc import PY3
 
 _logger = logging.getLogger(__name__)
-
-PY3 = sys.version_info.major == 3
 
 NO_PLOTTING = True
 if not PY3:     # my version of matplotlib doesn't support python 3
@@ -17,8 +18,8 @@ if not PY3:     # my version of matplotlib doesn't support python 3
         _logger.info(
             'Unable to import matplotlib.pyplot or numpy: plotting disabled')
 
-from morfessor import evaluation
-from .exception import UnsupportedConfigurationError
+from ...evaluation.evaluation import MorfessorEvaluation, EvaluationConfig
+from ..exception import UnsupportedConfigurationError
 
 
 class TimeHistogram(object):
@@ -136,7 +137,7 @@ class IterationStatistics(object):
 
     def set_gold_standard(self, reference):
         self._reference = reference
-        self._me = evaluation.MorfessorEvaluation(reference)
+        self._me = MorfessorEvaluation(reference)
 
     def callback(self, model, iteration_number=0):
         t_cur = time.time()
@@ -181,7 +182,7 @@ class IterationStatistics(object):
             segments = [model.viterbi_analyze(w)[0] for w in wlist]
             mer = self._me.evaluate_model(
                 model,
-                configuration=evaluation.EvaluationConfig(1, len(segments)))
+                configuration=EvaluationConfig(1, len(segments)))
             self.gold_bpr.append((
                 mer.precision[0],
                 mer.recall[0],

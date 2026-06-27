@@ -16,15 +16,14 @@ import random
 import re
 import sys
 
-from morfessor import baseline
-from . import utils, AbstractSegmenter
-from .categorizationscheme import MorphUsageProperties, WORD_BOUNDARY
-from .categorizationscheme import ByCategory, get_categories, CategorizedMorph
-from .categorizationscheme import DEFAULT_CATEGORY
-from .categorizationscheme import MaximumLikelihoodMorphUsage
-from .exception import InvalidOperationError
-from .utils import zlog, _is_string
-from ...loss.flatcat.encoding import FlatcatLexiconEncoding, FlatcatEncoding, FlatcatAnnotatedCorpusEncoding
+from ._common import AbstractSegmenter
+from ...util.flatcat.categorizationscheme import MorphUsageProperties, WORD_BOUNDARY
+from ...util.flatcat.categorizationscheme import ByCategory, get_categories, CategorizedMorph
+from ...util.flatcat.categorizationscheme import DEFAULT_CATEGORY
+from ...util.flatcat.categorizationscheme import MaximumLikelihoodMorphUsage
+from ...util.exception import InvalidOperationError
+from ...util.misc import zlog, _is_string, ngrams, _generator_progress, weighted_sample, _progress
+from ...loss.corpus import FlatcatLexiconEncoding, FlatcatEncoding, FlatcatAnnotatedCorpusEncoding
 
 PY3 = sys.version_info.major == 3
 
@@ -95,12 +94,9 @@ class FlatcatModel(AbstractSegmenter):
         # Cost variables
         self._lexicon_coding = FlatcatLexiconEncoding(morph_usage)
         # Flatcat encoding also stores the HMM parameters
-        self._corpus_coding = FlatcatEncoding(morph_usage,
-                                              self._lexicon_coding,
-                                              weight=corpusweight)
+        self._corpus_coding = FlatcatEncoding(morph_usage, self._lexicon_coding, weight=corpusweight)
 
-        super(FlatcatModel, self).__init__(self._corpus_coding,
-                                           nosplit=nosplit)
+        super(FlatcatModel, self).__init__(self._corpus_coding, nosplit=nosplit)
         self._initialized = False
         # None (= no corpus), "untagged", "partial", "full"
         self._corpus_tagging_level = None
@@ -243,9 +239,7 @@ class FlatcatModel(AbstractSegmenter):
                 if is_tagged and self._corpus_tagging_level == "untagged":
                     self._corpus_tagging_level = "partial"
             else:
-                analysis = tuple(CategorizedMorph(
-                                    self._interned_morph(morph, store=True),
-                                    None)
+                analysis = tuple(CategorizedMorph(self._interned_morph(morph, store=True),None)
                                  for morph in analysis)
                 if self._corpus_tagging_level is None:
                     self._corpus_tagging_level = "untagged"
@@ -263,9 +257,7 @@ class FlatcatModel(AbstractSegmenter):
         self._supervised = True
         if self._annotations_tagged is None:
             self._annotations_tagged = True
-        word_backlinks = {
-            ''.join(self.detag_word(seg.analysis)): i
-            for (i, seg) in enumerate(self.segmentations)}
+        word_backlinks = {''.join(self.detag_word(seg.analysis)): i for (i, seg) in enumerate(self.segmentations)}
         for (word, alternatives) in annotations.items():
             if alternatives[0][0].category is None:
                 self._annotations_tagged = False
@@ -275,17 +267,13 @@ class FlatcatModel(AbstractSegmenter):
                 # The word is also added to the unannotated corpus,
                 # to ensure that the needed morphs are available
                 i_unannot = len(self.segmentations)
-                self.segmentations.append(
-                    WordAnalysis(1, alternatives[0]))
+                self.segmentations.append(WordAnalysis(1, alternatives[0]))
             self.annotations[word] = Annotation(alternatives, None, i_unannot)
         del word_backlinks
         self._calculate_morph_backlinks()
-        self._annot_coding = FlatcatAnnotatedCorpusEncoding(
-                                self._corpus_coding,
-                                weight=annotatedcorpusweight)
+        self._annot_coding = FlatcatAnnotatedCorpusEncoding(self._corpus_coding, weight=annotatedcorpusweight)
         self._annot_coding.boundaries = len(self.annotations)
-        if (not self._annotations_tagged and
-                self._corpus_tagging_level == "full"):
+        if (not self._annotations_tagged and self._corpus_tagging_level == "full"):
             self._corpus_tagging_level = "partial"
 
     def initialize_baseline(self, min_difference_proportion=0.005):
@@ -460,7 +448,7 @@ class FlatcatModel(AbstractSegmenter):
             _logger.info(
                 "Tokens processed: %s\tCost: %s" % (token_num, newcost))
 
-            for _ in utils._progress(range(epoch_interval)):
+            for _ in _progress(range(epoch_interval)):
                 try:
                     is_anno, _, w, atoms = next(data)
                 except StopIteration:
@@ -739,8 +727,7 @@ class FlatcatModel(AbstractSegmenter):
             self.training_focus_sets = []
             for _ in range(num_sets):
                 self.training_focus_sets.append(
-                    set(utils.weighted_sample(self.segmentations,
-                                              num_samples)))
+                    set(weighted_sample(self.segmentations, num_samples)))
 
     def set_focus_sample(self, set_index):
         """Select one pregenerated focus sample set as active."""
@@ -822,13 +809,11 @@ class FlatcatModel(AbstractSegmenter):
         """Returns breakdown of costs for the given tagged segmentation."""
         wrapped = _wb_wrap(segmentation)
         breakdown = CostBreakdown()
-        for (prefix, suffix) in utils.ngrams(wrapped, n=2):
-            cost = self._corpus_coding.log_transitionprob(prefix.category,
-                                                          suffix.category)
+        for (prefix, suffix) in ngrams(wrapped, n=2):
+            cost = self._corpus_coding.log_transitionprob(prefix.category, suffix.category)
             breakdown.transition(cost, prefix.category, suffix.category)
             if suffix.morph != WORD_BOUNDARY:
-                cost = self._corpus_coding.log_emissionprob(
-                        suffix.category, suffix.morph)
+                cost = self._corpus_coding.log_emissionprob(suffix.category, suffix.morph)
                 breakdown.emission(cost, suffix.category, suffix.morph)
         if penalty != 0:
             breakdown.penalty(penalty)
@@ -874,10 +859,7 @@ class FlatcatModel(AbstractSegmenter):
         in the annotation alternatives,"""
         for (word, anno) in self.annotations.items():
             alts_de = [self.detag_word(alt) for alt in anno.alternatives]
-            seg_de = self.detag_word(
-                self.viterbi_analyze(
-                    word,
-                    strict_annot=False)[0])
+            seg_de = self.detag_word(self.viterbi_analyze(word, strict_annot=False)[0])
 
             if seg_de not in alts_de:
                 yield (seg_de, alts_de)
@@ -915,7 +897,7 @@ class FlatcatModel(AbstractSegmenter):
         bigram_freqs = collections.Counter()
         for (count, segments) in self._training_focus_filter():
             segments = _wb_wrap(segments)
-            for quad in utils.ngrams(segments, n=4):
+            for quad in ngrams(segments, n=4):
                 prev_morph, prefix, suffix, next_morph = quad
                 if (prefix.morph in self.forcesplit or
                     suffix.morph in self.forcesplit):
@@ -923,7 +905,8 @@ class FlatcatModel(AbstractSegmenter):
                     continue
                 context_type = MorphUsageProperties.context_type(
                     prev_morph.morph, next_morph.morph,
-                    prev_morph.category, next_morph.category)
+                    prev_morph.category, next_morph.category
+                )
                 bigram_freqs[(prefix, suffix, context_type)] += count
 
         for (bigram, count) in bigram_freqs.most_common():
@@ -993,7 +976,8 @@ class FlatcatModel(AbstractSegmenter):
                 transforms.append(
                     Transformation(rule,
                                    (CategorizedMorph(prefix, None),
-                                    CategorizedMorph(suffix, None))))
+                                    CategorizedMorph(suffix, None)))
+                )
             yield (transforms, targets, changed_morphs, temporaries)
 
     def _op_join_generator(self):
@@ -1136,7 +1120,7 @@ class FlatcatModel(AbstractSegmenter):
             # Include word boundaries
             categories.insert(0, WORD_BOUNDARY)
             categories.append(WORD_BOUNDARY)
-            for (prev_cat, next_cat) in utils.ngrams(categories, 2):
+            for (prev_cat, next_cat) in ngrams(categories, 2):
                 pair = (prev_cat, next_cat)
                 if pair in MorphUsageProperties.zero_transitions:
                     _logger.warning('Impossible transition ' +
@@ -1557,8 +1541,7 @@ class FlatcatModel(AbstractSegmenter):
         if self._changed_segmentations_op is not None:
             self._changed_segmentations_op.clear()
         if not self._online:
-            transformation_generator = utils._generator_progress(
-                transformation_generator)
+            transformation_generator = _generator_progress(transformation_generator)
         for experiment in transformation_generator:
             (transform_group, targets,
              changed_morphs, temporaries) = experiment
@@ -1859,7 +1842,7 @@ class ChangeCounts(object):
                 elif count > 0:
                     self.backlinks_add[cmorph.morph].add(corpus_index)
         wb_extended = _wb_wrap(analysis)
-        for (prefix, suffix) in utils.ngrams(wb_extended, n=2):
+        for (prefix, suffix) in ngrams(wb_extended, n=2):
             self.transitions[(prefix.category, suffix.category)] += count
         # Make sure that backlinks_remove and backlinks_add are disjoint
         # Removal followed by readding is the same as just adding

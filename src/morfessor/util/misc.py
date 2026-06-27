@@ -10,7 +10,24 @@ import sys
 import types
 import numpy as np
 
-import collections
+PY3 = sys.version_info.major == 3
+
+# _str is used to convert command line arguments to the right type
+# (str for PY3, unicode for PY2)
+if PY3:
+    _str = str
+else:
+    import locale
+    _str = lambda x: unicode(x, encoding=locale.getpreferredencoding())
+
+def _is_string(obj):
+    try:
+        # Python 2
+        return isinstance(obj, basestring)
+    except NameError:
+        # Python 3
+        return isinstance(obj, str)
+
 
 LOGPROB_ZERO = 1000000
 
@@ -20,6 +37,7 @@ def zlog(x):
     if x == 0:
         return LOGPROB_ZERO
     return -math.log(x)
+
 
 def logsumexp(xs):
     """Compute the log of the sum of exponentials of input elements.
@@ -211,35 +229,27 @@ def weighted_sample(data, num_samples):
     return data_indices
 
 
-def _generator_progress(generator):
+def _generator_progress(generator, freq=None):
     """Prints a progress bar for visualizing flow through a generator.
     The length of a generator is not known in advance, so the bar has
     no fixed length. GENERATOR_DOT_FREQ controls the frequency of dots.
 
     This function wraps the argument generator, returning a new generator.
     """
-
-    if GENERATOR_DOT_FREQ <= 0:
+    if freq is None:
+        freq = GENERATOR_DOT_FREQ
+    if freq <= 0 or not show_progress_bar:
         return generator
 
     def _progress_wrapper(generator):
         for (i, x) in enumerate(generator):
-            if i % GENERATOR_DOT_FREQ == 0:
-                sys.stderr.write('..')
+            if i % freq == 0:
+                sys.stderr.write('.')
                 sys.stderr.flush()
             yield x
         sys.stderr.write('\n')
 
     return _progress_wrapper(generator)
-
-
-def _is_string(obj):
-    try:
-        # Python 2
-        return isinstance(obj, basestring)
-    except NameError:
-        # Python 3
-        return isinstance(obj, str)
 
 
 def tail(n, iterable):

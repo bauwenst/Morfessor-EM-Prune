@@ -9,7 +9,7 @@ __all__ = ['MorfessorException', 'ArgumentException', 'MorfessorIO', 'FlatcatIO'
            'MorfessorBaseline', 'FlatcatModel', 'MorfessorEMPrune',
            'main', 'flatcat_main', 'get_default_argparser', 'get_flatcat_argparser', 'main_evaluation',
            'get_evaluation_argparser', 'MorphUsageProperties', 'HeuristicPostprocessor']
-µ
+
 
 __version__ = '2.0.7'
 __author__ = 'Sami Virpioja, Peter Smit, Stig-Arne Grönroos'
@@ -36,12 +36,12 @@ from .util.constructions.parallel import ParallelConstructionMethods
 from .util.exception import MorfessorException
 
 from .cmd import *
+from .cmd_flatcat import flatcat_main, get_flatcat_argparser
 
 # Morfessor FlatCat
-from .loss.flatcat.encoding import FlatcatAnnotatedCorpusEncoding
-from .models.flatcat import FlatcatModel
+from .models.flatcat.flatcat import FlatcatModel
 from .models.flatcat._common import AbstractSegmenter
-from .models.flatcat.categorizationscheme import MorphUsageProperties, HeuristicPostprocessor, WORD_BOUNDARY, CategorizedMorph
-from .models.flatcat.cmd import flatcat_main, get_flatcat_argparser
-from .models.flatcat.io import FlatcatIO
-from .models.flatcat.utils import _progress
+from .loss.corpus import FlatcatAnnotatedCorpusEncoding
+from .util.flatcat.categorizationscheme import MorphUsageProperties, HeuristicPostprocessor, WORD_BOUNDARY, CategorizedMorph
+from .util.data.io import FlatcatIO
+from .util.misc import _progress

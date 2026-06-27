@@ -117,6 +117,9 @@ class Cost:
         return self._lexicon_coding.get_codelength(compound) / self._corpus_coding.weight
 
 
+######################################################################################################################
+
+
 class EmLexiconEncoding(LexiconEncoding):
     def reset(self, counts):
         self.atoms = Counter()

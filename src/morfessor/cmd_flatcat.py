@@ -9,24 +9,17 @@ import string
 import sys
 import time
 
-from morfessor import evaluation as bleval
-from morfessor.io import MorfessorIO
-
-from . import get_version, _logger, flatcat, reduced
-from . import categorizationscheme, utils
-from .diagnostics import IterationStatistics
-from ...util.exception import ArgumentException
-from .io import FlatcatIO, TarGzModel, BINARY_ENDINGS, TARBALL_ENDINGS
-from .utils import _generator_progress
-
-PY3 = sys.version_info.major == 3
-
-# _str is used to convert command line arguments to the right type
-# (str for PY3, unicode for PY2)
-if PY3:
-    _str = str
-else:
-    _str = lambda x: unicode(x, encoding=locale.getpreferredencoding())
+from morfessor import get_version
+from morfessor.evaluation.evaluation import WilcoxonSignedRank, MorfessorEvaluation, EvaluationConfig, FORMAT_STRINGS
+from morfessor.models.flatcat.flatcat import FlatcatModel
+from morfessor.models.flatcat.reduced import FlatcatSegmenter
+from morfessor.util.exception import ArgumentException
+from morfessor.util.data.io import MorfessorIO, FlatcatIO, BINARY_ENDINGS, TARBALL_ENDINGS
+from morfessor.util.misc import PY3, _str, _generator_progress
+from morfessor.util.flatcat.categorizationscheme import HeuristicPostprocessor, CompoundSegmentationPostprocessor, \
+    map_category, MorphUsageProperties
+from morfessor.util.flatcat.diagnostics import IterationStatistics
+from morfessor.util import misc as utils
 
 _logger = logging.getLogger(__name__)
 
@@ -381,7 +374,7 @@ def add_training_arguments(argument_groups):
                  'words with changed category tags is below this limit. '
                  '(default %(default)s).')
     add_arg('--training-operations', dest='training_operations', type=str,
-            default=','.join(flatcat.FlatcatModel.DEFAULT_TRAIN_OPS),
+            default=','.join(FlatcatModel.DEFAULT_TRAIN_OPS),
             metavar='<list>',
             help='The sequence of training operations. '
                  'Valid training operations are strings for which '
@@ -614,7 +607,7 @@ def flatcat_main(args):
         _logger.info('Initializing from tarball...')
         model = io.read_tarball_model_file(args.initfile)
     else:
-        m_usage = categorizationscheme.MorphUsageProperties(
+        m_usage = MorphUsageProperties(
             ppl_threshold=args.ppl_threshold,
             ppl_slope=args.ppl_slope,
             length_threshold=args.length_threshold,
@@ -627,7 +620,7 @@ def flatcat_main(args):
             corpusweight = DEFAULT_CORPUSWEIGHT
         else:
             corpusweight = args.corpusweight
-        model = flatcat.FlatcatModel(
+        model = FlatcatModel(
             m_usage,
             forcesplit=args.forcesplit,
             nosplit=args.nosplit,
@@ -692,12 +685,12 @@ def flatcat_main(args):
     # Heuristic output postprocessing
     # nonmorpheme removal
     if args.rm_nonmorph:
-        processor = categorizationscheme.HeuristicPostprocessor()
+        processor = HeuristicPostprocessor()
         if processor not in model.postprocessing:
             model.postprocessing.append(processor)
     # compound splitter
     if args.compound_split:
-        processor = categorizationscheme.CompoundSegmentationPostprocessor()
+        processor = CompoundSegmentationPostprocessor()
         if processor not in model.postprocessing:
             model.postprocessing.append(processor)
     # FIXME: stemmer as postprocessor?
@@ -863,7 +856,7 @@ def flatcat_main(args):
         io.write_binary_file(args.stats_file, stats)
 
     if args.savereduced is not None:
-        reduced_model = reduced.FlatcatSegmenter(model)
+        reduced_model = FlatcatSegmenter(model)
         io.write_binary_file(args.savereduced, reduced_model)
 
 
@@ -1016,8 +1009,7 @@ def reformat_main(args):
             yield IntermediaryFormat(
                 item.count,
                 item.compound,
-                [categorizationscheme.map_category(
-                        analysis, from_cat, to_cat)
+                [map_category(analysis, from_cat, to_cat)
                  for analysis in item.alternatives])
 
     def custom_conversion(item):
@@ -1219,8 +1211,7 @@ def main_evaluation(args):
                    strict=False)
     blio = MorfessorIO(encoding=args.encoding)
 
-    ev = bleval.MorfessorEvaluation(
-        io.read_annotations_file(args.goldstandard[0]))
+    ev = MorfessorEvaluation(io.read_annotations_file(args.goldstandard[0]))
 
     results = []
 
@@ -1229,25 +1220,24 @@ def main_evaluation(args):
 
     f_string = args.formatstring
     if f_string is None:
-        f_string = bleval.FORMAT_STRINGS[args.template]
+        f_string = FORMAT_STRINGS[args.template]
 
     for f in args.models:
         model = io.read_any_model(f)
         # Heuristic output postprocessing
         # nonmorpheme removal
         if args.rm_nonmorph:
-            processor = categorizationscheme.HeuristicPostprocessor()
+            processor = HeuristicPostprocessor()
             if processor not in model.postprocessing:
                 model.postprocessing.append(processor)
         # compound splitter
         if args.compound_split:
-            processor = categorizationscheme.CompoundSegmentationPostprocessor()
+            processor = CompoundSegmentationPostprocessor()
             if processor not in model.postprocessing:
                 model.postprocessing.append(processor)
         # FIXME: stemmer as postprocessor?
         result = ev.evaluate_model(model,
-                                   configuration=bleval.EvaluationConfig(
-                                        num_samples, sample_size),
+                                   configuration=EvaluationConfig(num_samples, sample_size),
                                    meta_data={'name': os.path.basename(f)})
         results.append(result)
         print(result.format(f_string))
@@ -1256,15 +1246,12 @@ def main_evaluation(args):
     for f in args.test_segmentations:
         segmentation = blio.read_segmentation_file(f, False)
         result = ev.evaluate_segmentation(segmentation,
-                                          configuration=
-                                          bleval.EvaluationConfig(
-                                                num_samples, sample_size),
-                                          meta_data={'name':
-                                                     os.path.basename(f)})
+                                          configuration=EvaluationConfig(num_samples, sample_size),
+                                          meta_data={'name': os.path.basename(f)})
         results.append(result)
         print(result.format(f_string))
 
     if len(results) > 1 and num_samples > 1:
-        wsr = bleval.WilcoxonSignedRank()
+        wsr = WilcoxonSignedRank()
         r = wsr.significance_test(results)
-        bleval.WilcoxonSignedRank.print_table(r)
+        WilcoxonSignedRank.print_table(r)

@@ -4,28 +4,19 @@ Reduced models for segmenting with less memory overhead
 """
 from __future__ import unicode_literals
 
-import collections
 import logging
-import math
-import random
-import re
-import sys
 
-from .categorizationscheme import ByCategory, get_categories, CategorizedMorph
-from .categorizationscheme import MorphUsageProperties
-from . import AbstractSegmenter
-from ...loss.flatcat.encoding import FlatcatAnnotatedCorpusEncoding
-from .utils import LOGPROB_ZERO, zlog
+from ._common import AbstractSegmenter
+from ...util.misc import LOGPROB_ZERO
+from ...util.flatcat.categorizationscheme import ByCategory, get_categories, MorphUsageProperties
 
 _logger = logging.getLogger(__name__)
 
 
 class FlatcatSegmenter(AbstractSegmenter):
     def __init__(self, model):
-        self._corpus_coding = ReducedEncoding(
-            model._corpus_coding, model._morph_usage)
-        super(FlatcatSegmenter, self).__init__(self._corpus_coding,
-                                               model.nosplit_re)
+        self._corpus_coding = ReducedEncoding(model._corpus_coding, model._morph_usage)
+        super(FlatcatSegmenter, self).__init__(self._corpus_coding, model.nosplit_re)
         self._segment_only = True
         self._initialized = True
         self._corpus_tagging_level = 'full'

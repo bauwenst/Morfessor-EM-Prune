@@ -2,14 +2,14 @@ from __future__ import unicode_literals
 
 import math
 import re
+from abc import abstractmethod, ABC
 
-from .flatcat import WORD_BOUNDARY, CategorizedMorph, MorphUsageProperties, utils, AnalysisAlternative, ViterbiNode, _wb_wrap, CostBreakdown, \
-    SortedAnalysis
-from .categorizationscheme import get_categories, DEFAULT_CATEGORY
-from .utils import _is_string, LOGPROB_ZERO
+from .flatcat import ViterbiNode, _wb_wrap, CostBreakdown, SortedAnalysis
+from ...util.flatcat.categorizationscheme import get_categories, DEFAULT_CATEGORY, CategorizedMorph, MorphUsageProperties, AnalysisAlternative, WORD_BOUNDARY
+from ...util.misc import _is_string, LOGPROB_ZERO, minargmin, ngrams
 
 
-class AbstractSegmenter(object):
+class AbstractSegmenter(ABC):
     def __init__(self, corpus_coding, nosplit=None, postprocessing=None):
         self._initialized = False
         # None (= no corpus), "untagged", "partial", "full"
@@ -276,7 +276,7 @@ class AbstractSegmenter(object):
                                     self._corpus_coding.transit_emit_cost(
                                         categories[prev_cat],
                                         categories[next_cat], morph))
-                best.append(ViterbiNode(*utils.minargmin(cost)))
+                best.append(ViterbiNode(*minargmin(cost)))
                 cost = []
             # Update grid to prepare for next iteration
             grid.append(best)
@@ -288,7 +288,7 @@ class AbstractSegmenter(object):
             cost = (grid[-1][prev_cat].cost +
                     self._corpus_coding.log_transitionprob(*pair))
             best.append(cost)
-        backtrace = ViterbiNode(*utils.minargmin(best))
+        backtrace = ViterbiNode(*minargmin(best))
 
         # Backtrace for the best category sequence
         result = [CategorizedMorph(
@@ -424,7 +424,7 @@ class AbstractSegmenter(object):
         """Returns breakdown of costs for the given tagged segmentation."""
         wrapped = _wb_wrap(segmentation)
         breakdown = CostBreakdown()
-        for (prefix, suffix) in utils.ngrams(wrapped, n=2):
+        for (prefix, suffix) in ngrams(wrapped, n=2):
             cost = self._corpus_coding.log_transitionprob(prefix.category,
                                                           suffix.category)
             breakdown.transition(cost, prefix.category, suffix.category)
@@ -440,8 +440,9 @@ class AbstractSegmenter(object):
         """Override in subclass"""
         return morph
 
+    @abstractmethod
     def __contains__(self, morph):
-        raise AttributeError('Must override __contains__')
+        pass
 
     @staticmethod
     def get_categories(wb=False):

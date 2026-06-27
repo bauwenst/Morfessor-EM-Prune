@@ -1,24 +1,14 @@
-"""A scheme for assigning categories to morphs.
+"""
+For Morfessor FlatCat, a scheme for assigning categories to morphs.
 To change the number or meaning of categories,
 only this file should need to be modified.
 """
 from __future__ import unicode_literals
 import collections
-import locale
 import logging
 import math
-import sys
 
-from . import utils
-
-PY3 = sys.version_info.major == 3
-
-# _str is used to convert command line arguments to the right type
-# (str for PY3, unicode for PY2)
-if PY3:
-    _str = str
-else:
-    _str = lambda x: unicode(x, encoding=locale.getpreferredencoding())
+from ..misc import _str, zlog, Sparse
 
 _logger = logging.getLogger(__name__)
 
@@ -356,7 +346,7 @@ class MorphUsageProperties(object):
         self._uncapped_ppl = uncapped_ppl
 
         # Counts of different contexts in which a morph occurs
-        self._contexts = utils.Sparse(default=MorphContext(0, 1.0, 1.0))
+        self._contexts = Sparse(default=MorphContext(0, 1.0, 1.0))
         self._context_builders = collections.defaultdict(MorphContextBuilder)
 
         self._contexts_per_iter = 50000  # FIXME customizable
@@ -563,7 +553,7 @@ class MorphUsageProperties(object):
     def zlog_category_token_count(self):
         if self._zlctc is None:
             self._zlctc = ByCategory(
-                *[utils.zlog(x) for x in self.category_token_count])
+                *[zlog(x) for x in self.category_token_count])
         return self._zlctc
 
     def _get_marginalizer(self):
