@@ -9,6 +9,8 @@ __all__ = ['FlatcatModel']
 __author__ = 'Stig-Arne Gronroos'
 __author_email__ = "morfessor@cis.hut.fi"
 
+from dataclasses import dataclass
+
 import collections
 import logging
 import math
@@ -30,19 +32,34 @@ PY3 = sys.version_info.major == 3
 _logger = logging.getLogger(__name__)
 
 # Grid node for viterbi algorithm
-ViterbiNode = collections.namedtuple('ViterbiNode', ['cost', 'backpointer'])
+@dataclass
+class ViterbiNode:
+    cost: float
+    backpointer: int
 
-WordAnalysis = collections.namedtuple('WordAnalysis', ['count', 'analysis'])
+@dataclass
+class WordAnalysis:
+    count: int
+    analysis: tuple
 
-AnalysisAlternative = collections.namedtuple('AnalysisAlternative',
-                                             ['analysis', 'penalty'])
+@dataclass
+class AnalysisAlternative:
+    analysis: tuple
+    penalty: float
 
-SortedAnalysis = collections.namedtuple('SortedAnalysis',
-                                        ['cost', 'analysis',
-                                         'index', 'breakdown'])
+@dataclass
+class SortedAnalysis:
+    cost: float
+    analysis: tuple
+    index: int
+    breakdown: "CostBreakdown"
 
-Annotation = collections.namedtuple('Annotation',
-                                    ['alternatives', 'current', 'i_unannot'])
+@dataclass
+class Annotation:
+    alternatives: list[tuple[CategorizedMorph, ...]]
+    current: tuple
+    i_unannot: int
+
 
 CONS_SEP_WARNING = """
 #################### WARNING ####################
@@ -252,7 +269,7 @@ class FlatcatModel(AbstractSegmenter):
             i += 1
             self._corpus_coding.boundaries += count
 
-    def add_annotations(self, annotations, annotatedcorpusweight=None):
+    def add_annotations(self, annotations: dict[str,list[tuple[CategorizedMorph, ...]]], annotatedcorpusweight=None):
         """Adds data to the annotated corpus."""
         self._supervised = True
         if self._annotations_tagged is None:
@@ -273,7 +290,7 @@ class FlatcatModel(AbstractSegmenter):
         self._calculate_morph_backlinks()
         self._annot_coding = FlatcatAnnotatedCorpusEncoding(self._corpus_coding, weight=annotatedcorpusweight)
         self._annot_coding.boundaries = len(self.annotations)
-        if (not self._annotations_tagged and self._corpus_tagging_level == "full"):
+        if not self._annotations_tagged and self._corpus_tagging_level == "full":
             self._corpus_tagging_level = "partial"
 
     def initialize_baseline(self, min_difference_proportion=0.005):
@@ -519,9 +536,7 @@ class FlatcatModel(AbstractSegmenter):
 
     def _online_labeled_token(self, word, segments, i_word=None):
         if not self._supervised:
-            self._annot_coding = FlatcatAnnotatedCorpusEncoding(
-                                    self._corpus_coding,
-                                    weight=None)
+            self._annot_coding = FlatcatAnnotatedCorpusEncoding(self._corpus_coding, weight=None)
             self._supervised = True
 
         if segments[0].category is None:
@@ -556,15 +571,11 @@ class FlatcatModel(AbstractSegmenter):
                 for morph in self.detag_word(segments):
                     self._modify_morph_count(morph, 1)
                 self._calculate_morph_backlinks()
-            self.annotations[word] = Annotation((segments,),
-                                                tuple(new_analysis),
-                                                i_word)
+            self.annotations[word] = Annotation((segments,), tuple(new_analysis), i_word)
             self._annot_coding.boundaries += 1
             self._annot_coding.update_weight()
         else:
-            self.annotations[word] = Annotation((segments,),
-                                                tuple(new_analysis),
-                                                i_word)
+            self.annotations[word] = Annotation((segments,), tuple(new_analysis), i_word)
 
         assert i_word is not None
         changes_annot.update(new_analysis, 1)

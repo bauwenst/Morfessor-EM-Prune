@@ -95,7 +95,7 @@ class MorfessorIO(object):
                 file_obj.write("%f %s\n" % (count, constr))
         _logger.info("Done.")
 
-    def read_segmentation_file(self, file_name, has_counts=True, **kwargs) -> Iterator[Tuple[int, str, ]]:
+    def read_segmentation_file(self, file_name: str, has_counts: bool=True, **kwargs) -> Iterator[Tuple[int, str, ]]:
         """Read segmentation file.
 
         File format:
@@ -270,7 +270,7 @@ class MorfessorIO(object):
     def read_parameter_file(self, file_name):
         """Read learned or estimated parameters from a file"""
         params = {}
-        line_re = re.compile(r'^(.*)\s*:\s*(.*)$')
+        line_re = re.compile(r'^([^:].*)\s*:\s*(.*)$')
         for line in self._read_text_file(file_name):
             m = line_re.match(line.rstrip())
             if m:
@@ -372,11 +372,10 @@ class MorfessorIO(object):
             inp = codecs.getreader(self.encoding)(file_obj)
         return inp
 
-    def _read_text_file(self, file_name, raw=False):
-        """Read a text file with the appropriate compression and encoding.
-
+    def _read_text_file(self, file_name: str, raw=False) -> Iterator[str]:
+        """
+        Read a text file with the appropriate compression and encoding.
         Comments and empty lines are skipped unless raw is True.
-
         """
         inp = self._open_text_file_read(file_name)
         try:
@@ -462,15 +461,12 @@ class FlatcatIO(MorfessorIO):
     def write_tarball_model_file(self, file_name, model):
         _logger.info("Saving model as tarball...")
         if '.tar.gz' not in file_name:
-            _logger.warn('Tarball model misleadingly named: {}'.format(
-                file_name))
+            _logger.warn('Tarball model misleadingly named: {}'.format(file_name))
         with TarGzModel(file_name, 'w') as tarmodel:
             with tarmodel.newmember('params') as member:
-                self.write_parameter_file(member,
-                                        model.get_params())
+                self.write_parameter_file(member, model.get_params())
             with tarmodel.newmember('analysis') as member:
-                self.write_segmentation_file(member,
-                                           model.segmentations)
+                self.write_segmentation_file(member, model.segmentations)
             if model._supervised:
                 with tarmodel.newmember('annotations') as member:
                     self.write_annotations_file(
@@ -479,27 +475,23 @@ class FlatcatIO(MorfessorIO):
                          construction_sep=' ',
                          output_tags=True)
 
-    def read_tarball_model_file(self, file_name, model=None):
+    def read_tarball_model_file(self, file_name: str, model: FlatcatModel=None):
         """Read model from a tarball."""
         if model is None:
             model = FlatcatModel()
         with TarGzModel(file_name, 'r') as tarmodel:
             for (name, fobj) in tarmodel.members():
                 if name == 'params':
-                    model.set_params(
-                        self.read_parameter_file(fobj))
+                    model.set_params(self.read_parameter_file(fobj))
                 elif name == 'analysis':
-                    model.add_corpus_data(
-                        self.read_segmentation_file(fobj))
+                    model.add_corpus_data(self.read_segmentation_file(fobj))
                 elif name == 'annotations':
-                    model.add_annotations(
-                        self.read_annotations_file(fobj))
+                    model.add_annotations(self.read_annotations_file(fobj))
                 else:
-                    _logger.warn(
-                        'Unknown model component {}'.format(name))
+                    _logger.warn('Unknown model component {}'.format(name))
         return model
 
-    def read_any_model(self, file_name):
+    def read_any_model(self, file_name: str):
         """Read a complete model in either binary or tarball format.
            This method can NOT be used to initialize from a
            Morfessor 1.0 style segmentation"""
@@ -508,15 +500,14 @@ class FlatcatIO(MorfessorIO):
         elif any(file_name.endswith(ending) for ending in TARBALL_ENDINGS):
             model = self.read_tarball_model_file(file_name)
         else:
-            raise Exception(
-                'No indentified file ending in "{}"'.format(file_name))
+            raise Exception('No indentified file ending in "{}"'.format(file_name))
         model.initialize_hmm()
         return model
 
-    def write_segmentation_file(self, file_name, segmentations,
-                                construction_sep=None,
-                                output_tags=True,
-                                comment_string=''):
+    def write_segmentation_file(self, file_name: str, segmentations,
+                                construction_sep: str=None,
+                                output_tags: bool=True,
+                                comment_string: str=''):
         """Write segmentation file.
 
         File format (single line, wrapped only for pep8):
@@ -540,7 +531,7 @@ class FlatcatIO(MorfessorIO):
                 file_obj.write('{} {}\n'.format(count, s))
         _logger.info("Done.")
 
-    def read_segmentation_file(self, file_name):
+    def read_segmentation_file(self, file_name: str):
         """Read segmentation file.
         see docstring for write_segmentation_file for file format.
         """
@@ -559,8 +550,7 @@ class FlatcatIO(MorfessorIO):
             yield(count, tuple(cmorphs))
         _logger.info("Done.")
 
-    def read_annotations_file(self, file_name, construction_sep=' ',
-                              analysis_sep=None):
+    def read_annotations_file(self, file_name: str, construction_sep: str=' ', analysis_sep: str=None) -> dict[str, list[tuple[CategorizedMorph, ...]]]:
         """Read an annotations file.
 
         Each line has the format:
@@ -569,15 +559,12 @@ class FlatcatIO(MorfessorIO):
         Returns a defaultdict mapping a compound to a list of analyses.
 
         """
-        analysis_sep = (analysis_sep if analysis_sep
-                        else self.analysis_separator)
+        analysis_sep = analysis_sep if analysis_sep else self.analysis_separator
         annotations = collections.defaultdict(list)
         _logger.info("Reading annotations from '%s'..." % file_name)
         for line in self._read_text_file(file_name):
             compound, analyses_line = line.split(None, 1)
-            analysis = self.read_annotation(analyses_line,
-                                             construction_sep,
-                                             analysis_sep)
+            analysis = self.read_annotation(analyses_line, construction_sep, analysis_sep)
             annotations[compound].extend(analysis)
         _logger.info("Done.")
         return annotations
@@ -630,7 +617,7 @@ class FlatcatIO(MorfessorIO):
                     if len(compound) > 0:
                         yield (False, 1, compound, self._split_atoms(compound))
 
-    def write_lexicon_file(self, file_name, lexicon):
+    def write_lexicon_file(self, file_name: str, lexicon):
         """Write to a Lexicon file all constructions
         and their emission counts.
         """
@@ -638,25 +625,22 @@ class FlatcatIO(MorfessorIO):
         with self._open_text_file_write(file_name) as file_obj:
             for (construction, counts) in lexicon:
                 count = sum(counts)
-                file_obj.write('{}\t{}\t{}\n'.format(count,
-                                                     construction,
-                                                     '\t'.join('{}'.format(x)
-                                                          for x in counts)))
+                file_obj.write(f"{count}\t{construction}\t" + '\t'.join(str(x) for x in counts) + "\n")
         _logger.info("Done.")
 
     def write_formatted_file(self,
-                             file_name,
+                             file_name: str,
                              line_format,
                              data,
                              data_func,
                              newline_func=None,
                              output_newlines=False,
                              output_tags=False,
-                             construction_sep=None,
-                             analysis_sep=None,
-                             category_sep=None,
+                             construction_sep: str=None,
+                             analysis_sep: str=None,
+                             category_sep: str=None,
                              filter_tags=None,
-                             filter_len=3):
+                             filter_len: int=3):
         """Writes a file in the specified format.
 
         Formatting is flexible: even formats that cannot be read by
@@ -710,7 +694,7 @@ class FlatcatIO(MorfessorIO):
                                 num_nonmorphemes=num_nonmorphemes,
                                 num_letters=num_letters))
 
-    def read_annotation(self, line, construction_sep, analysis_sep=None):
+    def read_annotation(self, line: str, construction_sep: str, analysis_sep: str=None) -> list[tuple[CategorizedMorph, ...]]:
         if analysis_sep is not None:
             analyses = line.split(analysis_sep)
         else:
@@ -723,9 +707,9 @@ class FlatcatIO(MorfessorIO):
             out.append(tuple(self._morph_or_cmorph(x) for x in segments))
         return out
 
-    def _morph_or_cmorph(self, morph_cat):
+    def _morph_or_cmorph(self, morph_cat: str) -> CategorizedMorph:
         """Parses a string describing a morph, either tagged
-        or not tagged, returing a CategorizedMorph.
+        or not tagged, returning a CategorizedMorph.
         """
         parts = morph_cat.rsplit(self.category_separator, 1)
         morph = parts[0].strip()
@@ -859,47 +843,6 @@ class FlatcatIO(MorfessorIO):
         inp = codecs.getreader(self.encoding)(file_obj)
         return inp
 
-    # straight copypasta
-    def _read_text_file(self, file_name, raw=False):
-        """Read a text file with the appropriate compression and encoding.
-
-        Comments and empty lines are skipped unless raw is True.
-
-        """
-        inp = self._open_text_file_read(file_name)
-        try:
-            for line in inp:
-                line = line.rstrip()
-                if not raw and \
-                   (len(line) == 0 or line.startswith(self.comment_start)):
-                    continue
-                if self.lowercase:
-                    yield line.lower()
-                else:
-                    yield line
-        except KeyboardInterrupt:
-            if file_name == '-':
-                _logger.info("Finished reading from stdin")
-                return
-            else:
-                raise
-
-    def read_parameter_file(self, file_name):
-        """Read learned or estimated parameters from a file"""
-        params = {}
-        line_re = re.compile(r'^([^:]*)\s*:\s*(.*)$')
-        for line in self._read_text_file(file_name):
-            m = line_re.match(line.rstrip())
-            if m:
-                key = m.group(1)
-                val = m.group(2)
-                try:
-                    val = float(val)
-                except ValueError:
-                    pass
-                params[key] = val
-        return params
-
 
 class TarGzMember(object):
     """File-like object that writes itself into the tarfile on closing"""
@@ -929,8 +872,7 @@ class TarGzMember(object):
         self.strio.write(*args, **kwargs)
 
     def __repr__(self):
-        return '{} in {}'.format(
-            self.arcname, self.tarmodel.filename)
+        return f"{self.arcname} in {self.tarmodel.filename}"
 
 
 class TarGzModel(object):

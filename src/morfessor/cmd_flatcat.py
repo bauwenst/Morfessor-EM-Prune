@@ -646,8 +646,7 @@ def flatcat_main(args):
     # Add annotated data
     for f in args.annofiles:
         annotations = io.read_annotations_file(f)
-        model.add_annotations(annotations,
-                              args.annotationweight)
+        model.add_annotations(annotations, args.annotationweight)
 
     # Override loaded values with values specified on the commandline
     if args.corpusweight is not None:
